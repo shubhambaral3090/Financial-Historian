@@ -1,7 +1,8 @@
 FINANCIAL HISTORIAN — WINDOWS 11
 
 1. Extract the ZIP into a folder (do not launch from inside the ZIP).
-2. Install Python 3.12 from https://www.python.org/downloads/windows/
+2. Use your installed Python 3.11 or newer; 3.12 and 3.14.6 passed app tests.
+   If Python is missing, install it from https://www.python.org/downloads/windows/
    Select "Add Python to PATH" or install the Python launcher.
 3. Double-click launch_windows.cmd. First-time installation needs internet.
 4. In the browser, enter your name and contact email for SEC access.

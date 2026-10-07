@@ -6,7 +6,7 @@ The browser interface uses a dark terminal style. The app connects to public SEC
 
 ## Start on Windows 11
 
-1. Install **Python 3.12** from [python.org](https://www.python.org/downloads/windows/). Python 3.11 or later is supported. Include the Python launcher or select **Add Python to PATH**.
+1. Use your installed Python, or install it from [python.org](https://www.python.org/downloads/windows/). **Python 3.12 and 3.14.6** passed the application tests on Linux; Windows dependency wheels are available for 3.14. Python 3.11 or later is required. Include the Python launcher or select **Add Python to PATH**.
 2. Download or clone this repository and extract it into a folder you can write to.
 3. Double-click **launch_windows.cmd**. The first launch creates `.venv` and installs the pinned dependencies; this requires internet access. Subsequent launches reuse the environment unless requirements change.
 4. Enter your real name or organization and contact email in the sidebar. The SEC requires an identifying contact in automated requests. These details are saved locally in `data/settings.json`; they are not an account or API key.
@@ -15,6 +15,8 @@ The browser interface uses a dark terminal style. The app connects to public SEC
 Keep the launcher window open while using the application. Press **Ctrl+C** in that window to stop it. If the browser does not open automatically, enter `127.0.0.1:8501` in your browser. The server binds to the loopback interface so other machines cannot connect to it by default.
 
 The launcher installs from `requirements.txt` into this project's private environment. It preserves normal TLS and package verification. Do not bypass certificate verification if your network or corporate proxy reports a trust problem.
+
+The launcher uses the default installed Python selected by `py` (or `python` if the launcher is unavailable). It does not require a separate Python 3.12 installation. If an older attempt left an unusable `.venv`, rename that folder to `.venv-old` and launch again. Keep your `data` folder to preserve saved contact settings.
 
 ## Historical coverage and financial interpretation
 

@@ -1,5 +1,24 @@
 # First-version validation
 
+## Launcher correction and Python 3.14.6
+
+The initial Windows launcher attempted an absent Python 3.12 and continued to
+dependency installation without a usable environment on the user's machine.
+The corrected launcher delegates setup to `scripts/launch_local.py` using the
+default installed Python. Creation must produce a usable interpreter before
+any dependency command runs. No specific absent runtime is requested.
+
+The corrected code passed 117 tests on CPython 3.14.6, including nine setup
+regressions for failed creation, false-success creation, invalid environments,
+installation failure, paths with spaces and repeatable startup. A fresh real
+Python 3.14.6 environment was created and prepared in a path containing spaces;
+the second preparation reused it successfully. The original 108 application
+tests also passed on Python 3.14.6. Windows x64 runtime wheels resolved and
+downloaded successfully. Actual Windows batch execution still needs the user's
+local acceptance check.
+
+## Initial application checks
+
 Version 0.1.0 was checked in the cloud on Python 3.12.
 
 - `python -m pytest -q`: 108 tests passed, none skipped.
