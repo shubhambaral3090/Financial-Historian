@@ -13,13 +13,14 @@ from pathlib import Path
 
 import streamlit as st
 
-from financial_historian.export import build_workbook
+from financial_historian import __version__
+from financial_historian.export import CURRENCIES, build_workbook
 from financial_historian.models import STATEMENTS, Company, StatementBundle
 from financial_historian.service import FinancialHistorian
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = ROOT / "data" / "settings.json"
-APP_VERSION = "0.1.0"
+APP_VERSION = __version__
 
 
 def sanitize(text: object) -> str:
@@ -115,7 +116,7 @@ def explain_error(error: Exception) -> str:
 
 
 def clear_workbook() -> None:
-    for key in ("bundle", "workbook", "workbook_name"):
+    for key in ("bundle", "workbook", "workbook_name", "retrieval_messages"):
         st.session_state.pop(key, None)
 
 
@@ -126,86 +127,96 @@ def value_periods(bundle: StatementBundle) -> list[str]:
 def render_bundle(bundle: StatementBundle) -> None:
     periods = sorted(bundle.periods)
     retrieved_periods = value_periods(bundle)
-    if not retrieved_periods:
-        st.warning("No annual financial values were extracted. This download contains filing links and coverage notes only; it cannot be used as a statement history.")
-    columns = st.columns(3)
-    columns[0].metric("Periods with values", len(retrieved_periods))
-    columns[1].metric("First retrieved value", retrieved_periods[0] if retrieved_periods else "Unavailable")
-    columns[2].metric("Latest retrieved value", retrieved_periods[-1] if retrieved_periods else "Unavailable")
-    if periods:
-        st.caption(f"Workbook period columns span {periods[0]} to {periods[-1]}. Filing years without extracted values remain visible as blank columns.")
-    st.download_button(
-        "↓  Download Excel workbook",
-        data=st.session_state["workbook"],
-        file_name=st.session_state["workbook_name"],
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-        use_container_width=True,
-        key="download_workbook",
-    )
-    st.caption("Workbook includes annual statements, figure-level sources, SEC tags, filing coverage, and retrieval notes. Missing values remain blank.")
-    if len(bundle.warnings) > 6:
-        st.warning(f"{len(bundle.warnings)} coverage and accounting notices. Review these notes and Sources & Coverage before using the workbook.")
-        with st.expander("Review coverage and accounting notices"):
-            for warning in bundle.warnings:
-                st.write(warning)
-    else:
-        for warning in bundle.warnings:
-            st.warning(warning)
-    tabs = st.tabs([*STATEMENTS, "Coverage & sources"])
+    with st.container(border=True):
+        st.subheader("Your workbook is ready" if retrieved_periods else "Your coverage report is ready")
+        st.caption(st.session_state["workbook_name"])
+        st.download_button(
+            "Download Excel workbook",
+            data=st.session_state["workbook"],
+            file_name=st.session_state["workbook_name"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            width="stretch",
+            key="download_workbook",
+        )
+        if not retrieved_periods:
+            st.warning("No annual financial values were extracted. This download contains filing links and coverage notes only; it cannot be used as a statement history.")
+        columns = st.columns(3)
+        columns[0].metric("Periods with figures", len(retrieved_periods))
+        columns[1].metric("Earliest figures", retrieved_periods[0][:4] if retrieved_periods else "Unavailable")
+        columns[2].metric("Latest figures", retrieved_periods[-1][:4] if retrieved_periods else "Unavailable")
+        st.caption("Annual statements, original reported data, and SEC source links in one file. A period with figures can still have missing line items.")
+
+    empty_periods = sorted(set(periods) - set(retrieved_periods))
+    if empty_periods:
+        count = len(empty_periods)
+        st.info(f"{count} discovered annual {'period has' if count == 1 else 'periods have'} no extracted figures. Review the coverage details below for the missing years and their filings.")
+    if bundle.warnings:
+        count = len(bundle.warnings)
+        st.caption(f"{count} retrieval and accounting {'note is' if count == 1 else 'notes are'} available in Coverage & notes below and in the workbook.")
+
+    st.subheader("Statement preview")
+    st.caption("Currency amounts in millions; per-share figures and share counts retain their reported units. Scroll across for older years. A dash means unavailable.")
+    tabs = st.tabs(["Income statement", "Balance sheet", "Cash flow"])
     for index, statement in enumerate(STATEMENTS):
         with tabs[index]:
             rows = bundle.statements.get(statement, [])
             if not rows:
                 st.info("No usable annual figures were extracted for this statement. Review coverage and the linked filings.")
                 continue
-            display = []
+            columns = "".join(f"<th scope='col'>{html.escape(period)}</th>" for period in reversed(periods))
+            body = []
+            previous_section = ""
             for row in rows:
-                item = {"Line item": row.label, "Unit": row.unit}
+                if row.section and row.section != previous_section:
+                    body.append(f"<tr class='statement-section'><th scope='row'>{html.escape(row.section)}</th><td colspan='{len(periods) + 1}'></td></tr>")
+                    previous_section = row.section
+                is_currency = row.unit in CURRENCIES
+                unit = f"{row.unit} million" if is_currency else row.unit
+                cells = []
                 for period in reversed(periods):
                     fact = row.values.get(period)
-                    item[period] = (fact.presentation_value if fact.presentation_value is not None else fact.value) if fact else None
-                display.append(item)
-            st.dataframe(display, hide_index=True, use_container_width=True)
-            st.caption("Preview shows reported units without scaling, with the printed statement sign when available. Excel's Data Sheet preserves the underlying reported XBRL value and source details.")
-    with tabs[-1]:
-        st.markdown("**How historical values are chosen**")
-        st.write("For each comparable period, tag, and unit, the app favors the latest eligible annual filing in its retrieved data. A later comparative figure may incorporate a restatement; its presence alone does not prove a restatement. Review filing notes before making analyst adjustments.")
-        st.markdown("**Available filing coverage**")
+                    if fact is None:
+                        cells.append("<td class='missing' aria-label='Unavailable'>—</td>")
+                        continue
+                    value = fact.presentation_value if fact.presentation_value is not None else fact.value
+                    value = value / 1_000_000 if is_currency else value
+                    number = f"{abs(value):,.6f}".rstrip("0").rstrip(".")
+                    text = f"({number})" if value < 0 else number
+                    cells.append(f"<td>{text}</td>")
+                emphasis = " class='statement-total'" if row.is_total else ""
+                body.append(f"<tr{emphasis}><th scope='row'>{html.escape(row.label)}</th><td class='unit'>{html.escape(unit)}</td>{''.join(cells)}</tr>")
+            st.html(
+                f"<div class='statement-preview' tabindex='0' role='region' aria-label='{html.escape(statement)} annual history'>"
+                f"<table><thead><tr><th scope='col'>Line item</th><th scope='col'>Unit</th>{columns}</tr></thead>"
+                f"<tbody>{''.join(body)}</tbody></table></div>"
+            )
+
+    with st.expander("Coverage & notes"):
+        st.write("The search covers all available annual history, with no year limit. SEC electronic filings and supported formats may cover only part of a company's life.")
+        if empty_periods:
+            st.write("**No extracted figures:** " + ", ".join(empty_periods))
         if bundle.coverage:
             st.dataframe(
                 [{"Period end": entry.report_date, "Filed": entry.filed, "Status": entry.status, "Detail": entry.detail, "Filing": entry.source_url} for entry in bundle.coverage],
                 column_config={"Filing": st.column_config.LinkColumn("Filing", display_text="Open SEC filing")},
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
         else:
             st.info("No filing coverage records were returned. Source details are included for the figures that were retrieved.")
-        st.caption("Coverage describes retrieval results, not a guarantee that every historical filing or every original line item has been captured.")
+        if bundle.warnings:
+            st.markdown("**Retrieval and accounting notes**")
+            for warning in bundle.warnings:
+                st.write(sanitize(warning))
+        st.markdown("**How values are chosen**")
+        st.write("For each comparable historical period, the app favors the latest eligible annual filed values. Later comparatives may reflect restatements, but a later filing alone does not prove one. The workbook preserves original source values and records where each selected figure came from.")
+        st.caption("Figures are reported history. No forecasts, valuations, or analyst adjustments are added.")
+    messages = st.session_state.get("retrieval_messages", [])
+    if messages:
+        with st.expander("Retrieval details"):
+            st.code("\n".join(messages), language=None)
 
-
-st.set_page_config(page_title="Financial Historian", page_icon="↗", layout="wide", initial_sidebar_state="expanded")
-st.markdown(
-    """<style>
-    .stApp { background: #090d13; color: #e7edf5; }
-    .stApp, button, input, textarea, [data-testid="stMetricValue"], h1, h2, h3 {
-      font-family: Consolas, 'Cascadia Code', 'SFMono-Regular', monospace !important;
-    }
-    .block-container { max-width: 1300px; padding-top: 2.25rem; padding-bottom: 3rem; }
-    [data-testid="stSidebar"] { background: #101720; border-right: 1px solid #253243; }
-    [data-testid="stMetric"] { background: #111923; border: 1px solid #263446; border-radius: 8px; padding: 16px; }
-    [data-testid="stMetricLabel"] { color: #96a7bd; }
-    [data-testid="stMetricValue"] { font-size: 1.55rem; }
-    .eyebrow { color: #52d6ba; font-size: .8rem; letter-spacing: .16em; margin-bottom: .6rem; }
-    .hero { font-size: clamp(2rem, 5vw, 3rem); font-weight: 600; line-height: 1.15; margin-bottom: .9rem; }
-    .intro { color: #aab8c9; line-height: 1.7; max-width: 850px; font-size: .97rem; }
-    .selection { background: #111c25; border-left: 3px solid #52d6ba; padding: 18px; border-radius: 4px; margin: 12px 0; }
-    .selection-name { font-size: 1.1rem; color: #e7edf5; }
-    .selection-meta { color: #92a8be; margin-top: 6px; font-size: .85rem; }
-    .footer-note { color: #7f91a8; font-size: .75rem; line-height: 1.7; padding-top: 1rem; }
-    </style>""",
-    unsafe_allow_html=True,
-)
 
 config, settings_problem = read_settings()
 environment_contact = os.environ.get("SEC_USER_AGENT", "").strip()
@@ -215,21 +226,67 @@ saved_contact = f"{saved_name} {saved_email}" if saved_name and saved_email else
 st.session_state["user_agent"] = environment_contact or saved_contact
 user_agent = st.session_state["user_agent"]
 
+st.set_page_config(page_title="Financial Historian", page_icon="📄", layout="wide", initial_sidebar_state="collapsed" if user_agent else "expanded")
+st.markdown(
+    """<style>
+    .stApp { background: #ffffff; color: #202123; }
+    .stApp, button, input, textarea, h1, h2, h3 {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+    }
+    .block-container { max-width: 1100px; padding-top: 2.8rem; padding-bottom: 2rem; }
+    [data-testid="stAppDeployButton"] { display: none; }
+    [data-testid="stSidebar"] { background: #f7f7f8; border-right: 1px solid #ececee; }
+    [data-testid="stSidebar"] .block-container { padding-top: 1.5rem; }
+    h1 { font-size: clamp(1.8rem, 4vw, 2.5rem) !important; font-weight: 600 !important; letter-spacing: -.055rem; }
+    h2, h3 { letter-spacing: -.02rem; }
+    [data-testid="stMetricValue"] { font-size: 1.65rem; font-weight: 600; }
+    [data-testid="stMetricLabel"], [data-testid="stCaptionContainer"] { color: #686b70; }
+    [data-testid="stForm"] { border: none; padding: 0; }
+    [data-testid="stVerticalBlockBorderWrapper"] > div { border-radius: 14px; }
+    .brand { color: #35373b; font-size: 1rem; font-weight: 600; letter-spacing: -.02rem; }
+    .welcome { max-width: 780px; margin: 3rem auto 1.6rem; text-align: center; }
+    .welcome p { color: #686b70; line-height: 1.65; font-size: 1rem; max-width: 620px; margin: 0 auto; }
+    .company-name { color: #202123; font-size: 1.65rem; font-weight: 600; line-height: 1.3; margin: 1.8rem 0 .35rem; }
+    .company-meta { color: #686b70; font-size: .9rem; margin-bottom: 1rem; }
+    .statement-preview { overflow: auto; max-height: 520px; border: 1px solid #e5e7eb; border-radius: 10px; }
+    .statement-preview table { border-collapse: separate; border-spacing: 0; min-width: 100%; font-size: .85rem; font-variant-numeric: tabular-nums; }
+    .statement-preview th, .statement-preview td { padding: 10px 14px; border-bottom: 1px solid #eceef0; white-space: nowrap; text-align: right; }
+    .statement-preview thead th { position: sticky; top: 0; background: #f7f7f8; z-index: 2; font-weight: 500; color: #686b70; }
+    .statement-preview th:first-child { position: sticky; left: 0; min-width: 230px; max-width: 340px; white-space: normal; text-align: left; background: white; z-index: 1; font-weight: 400; border-right: 1px solid #eceef0; }
+    .statement-preview thead th:first-child { z-index: 3; background: #f7f7f8; }
+    .statement-preview thead th:nth-child(2) { text-align: left; }
+    .statement-preview .unit { color: #686b70; font-size: .8rem; text-align: left; }
+    .statement-preview .missing { color: #a0a3a8; }
+    .statement-preview .statement-total > * { font-weight: 600; border-top: 1px solid #d9dde2; }
+    .statement-preview .statement-section > * { background: #f3f4f5; font-weight: 600; color: #555a61; }
+    .statement-preview .statement-total th:first-child { font-weight: 600; }
+    .statement-preview .statement-section th:first-child { background: #f3f4f5; font-weight: 600; }
+    .footer-note { color: #85878c; font-size: .78rem; text-align: center; padding-top: 2.5rem; }
+    @media (max-width: 700px) {
+      .block-container { padding-top: 3.4rem; }
+      .welcome { margin-top: 1.8rem; }
+      [data-testid="stHorizontalBlock"] { flex-direction: column; }
+      [data-testid="stColumn"] { width: 100% !important; flex: 1 1 100% !important; min-width: 100% !important; }
+    }
+    </style>""",
+    unsafe_allow_html=True,
+)
+
 with st.sidebar:
-    st.markdown("### FINANCIAL\n### HISTORIAN")
-    st.caption("ANNUAL FINANCIAL RECORDS")
+    st.markdown("### Financial Historian")
+    st.caption("Your local financial research workspace")
     st.divider()
-    st.markdown("**SEC access**")
+    st.markdown("**SEC connection**")
     if environment_contact:
-        st.success("Contact configured by SEC_USER_AGENT.")
+        st.caption("✓ Contact configured")
     else:
         with st.expander("Contact details" if user_agent else "Set up SEC access", expanded=not bool(user_agent)):
-            st.write("The SEC asks automated tools to identify a real name and contact email. No API key or paid account is needed.")
+            st.write("The SEC requires a real name and contact email for automated requests. No account or API key is needed.")
             with st.form("contact_form"):
                 name = st.text_input("Your name or organization", value=saved_name, max_chars=120)
                 email = st.text_input("Contact email", value=saved_email, max_chars=200)
-                contact_submitted = st.form_submit_button("Save contact", use_container_width=True)
-            st.caption("Stored only in data/settings.json on this computer and sent to the SEC with requests. Excluded from diagnostic downloads.")
+                contact_submitted = st.form_submit_button("Save contact", width="stretch")
+            st.caption("Saved on this computer and sent only with SEC requests. Your contact is excluded from diagnostic downloads.")
             if contact_submitted:
                 if not name.strip() or "\n" in name or "\r" in name:
                     st.error("Enter your name or organization on one line.")
@@ -249,27 +306,35 @@ with st.sidebar:
     if settings_problem:
         st.warning(settings_problem)
     st.divider()
-    st.markdown("**Retrieval policy**")
-    st.caption("All available annual history\n\nLatest eligible filed values\n\nReported units · source links\n\nNo forecasts or valuation")
-    with st.expander("Diagnostics & local files"):
-        st.write("SEC responses are cached in data/cache. Operational logs are saved in logs. Downloads below contain this session's sanitized events.")
+    with st.expander("About the data"):
+        st.write("All available annual history is searched, without a year limit. Each retrieved figure includes a source filing. Older and unsupported filings can leave gaps, which are recorded in the workbook.")
+        st.caption("Latest eligible filed values · Original reported units · No forecasts or valuations")
+    with st.expander("Help & diagnostics"):
+        st.write("Use Extract All on the downloaded ZIP before opening launch_windows.cmd. Keep this browser tab open while a workbook is being prepared.")
+        st.caption("Local files: data/settings.json for contact details, data/cache for SEC responses, and logs for operational events.")
         st.download_button(
             "Download diagnostic log",
             data="\n".join([f"Financial Historian {APP_VERSION}", f"Python {platform.python_version()} / {platform.system()}", "SEC contact identity omitted.", *st.session_state.get("diagnostics", [])]) + "\n",
             file_name="financial_historian_diagnostics.txt",
             mime="text/plain",
-            use_container_width=True,
+            width="stretch",
         )
     st.caption(f"Local edition · v{APP_VERSION}")
 
-st.markdown('<div class="eyebrow">PUBLIC FILINGS / PRIVATE WORKSPACE</div><div class="hero">Financial history, with a paper trail.</div><div class="intro">Find a U.S. public company and export its available annual income statement, balance sheet, and cash flow history to Excel. Every retrieved figure carries its SEC source.</div>', unsafe_allow_html=True)
-st.write("")
+st.markdown('<div class="brand">Financial Historian</div>', unsafe_allow_html=True)
+if not st.session_state.get("selected_company"):
+    st.markdown('<div class="welcome"><h1>Explore a company’s financial history</h1><p>Income statements, balance sheets, and cash flow — across all available annual filings, ready for Excel.</p></div>', unsafe_allow_html=True)
+else:
+    st.write("")
 with st.form("company_search"):
-    search_query = st.text_input("Company name, ticker, or CIK", placeholder="e.g. Apple, AAPL, or 320193", max_chars=150)
-    submitted = st.form_submit_button("Search companies", type="primary", disabled=not bool(user_agent))
+    search_column, button_column = st.columns([5, 1.3], vertical_alignment="bottom")
+    with search_column:
+        search_query = st.text_input("Company name, ticker, or CIK", placeholder="Search Apple, AAPL, or 320193", max_chars=150)
+    with button_column:
+        submitted = st.form_submit_button("Search companies", type="primary", width="stretch", disabled=not bool(user_agent))
 
 if not user_agent:
-    st.info("Start with your SEC contact details in the sidebar, then search for a company.")
+    st.info("Add your SEC contact details in the sidebar to get started. You only need to do this once.")
 
 if submitted:
     if not search_query.strip():
@@ -292,35 +357,47 @@ if "results" in st.session_state and not st.session_state.get("selected_company"
     if not results:
         st.info("No matching company was found. Try its full legal name, ticker, or SEC CIK. The SEC ticker directory may omit delisted companies.")
     else:
-        st.caption("SELECT A COMPANY")
+        st.caption("Choose a company")
         for company in results:
-            label = f"{company.ticker or 'CIK ' + company.cik}  ·  {company.name}  ·  CIK {company.cik}"
-            if st.button(label, key=f"company_{company.cik}_{company.ticker}", use_container_width=True):
+            label = f"{company.name}  ·  {company.ticker or 'CIK ' + company.cik}"
+            if st.button(label, key=f"company_{company.cik}_{company.ticker}", width="stretch"):
                 st.session_state["selected_company"] = company
                 clear_workbook()
                 st.rerun()
 
 selected: Company | None = st.session_state.get("selected_company")
 if selected:
-    st.markdown(f'<div class="selection"><div class="selection-name">{html.escape(selected.name)}</div><div class="selection-meta">{html.escape(selected.ticker or "No current ticker")} · CIK {html.escape(selected.cik)} · ALL AVAILABLE ANNUAL HISTORY</div></div>', unsafe_allow_html=True)
-    st.caption("No year limit is applied. Structured SEC data is strongest from the XBRL era, generally around 2009 onward. Older filings are inspected where supported; unavailable years and unsupported formats are identified in coverage.")
+    st.markdown(f'<div class="company-name">{html.escape(selected.name)}</div><div class="company-meta">{html.escape(selected.ticker or "No current ticker")} · CIK {html.escape(selected.cik)}</div>', unsafe_allow_html=True)
     if "bundle" not in st.session_state:
-        if st.button("Prepare Excel download", type="primary", use_container_width=True, disabled=not bool(user_agent)):
+        st.write("Prepare all available annual history with source links for each figure.")
+        st.caption("Large histories can take several minutes. Older filings may have gaps; the workbook explains what was retrieved.")
+        if st.button("Prepare Excel download", type="primary", width="stretch", disabled=not bool(user_agent)):
+            st.session_state["retrieval_messages"] = []
             try:
-                with st.status("Retrieving annual financial history…", expanded=True) as status:
+                with st.status("Preparing your financial history…", expanded=True) as status:
+                    current_step = st.empty()
+
                     def show_progress(message: str) -> None:
-                        st.write(sanitize(message))
+                        safe_message = sanitize(message)
+                        current_step.write(safe_message)
+                        messages = st.session_state["retrieval_messages"]
+                        messages.append(safe_message)
+                        del messages[:-150]
                         record("retrieval_progress", message)
 
                     bundle = get_service(user_agent).generate(selected, progress=show_progress)
-                    workbook = build_workbook(bundle)
+                    show_progress("Building the Excel workbook…")
+                    workbook = build_workbook(bundle, progress=show_progress)
                     st.session_state["bundle"] = bundle
                     st.session_state["workbook"] = workbook
                     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", selected.ticker or selected.name).strip("_.") or selected.cik
                     st.session_state["workbook_name"] = f"{safe_name}_Financial_History.xlsx"
+                    current_step.empty()
                     status.update(label="Workbook ready" if value_periods(bundle) else "Coverage report ready · no financial values", state="complete", expanded=False)
                     record("workbook_ready", f"cik={selected.cik} periods={len(bundle.periods)} bytes={len(workbook)}")
+                    st.rerun()
             except Exception as error:
+                clear_workbook()
                 record("generation_failed", f"{type(error).__name__}: {error}")
                 st.error(explain_error(error))
     if "bundle" in st.session_state:
@@ -329,7 +406,6 @@ if selected:
             clear_workbook()
             st.rerun()
 elif "results" not in st.session_state:
-    st.markdown("#### Your workflow")
-    st.write("1. Search and select a company.\n2. Prepare its available annual history.\n3. Download a sourced workbook and review any coverage gaps.")
+    st.caption("All available years · Three annual statements · SEC sources included")
 
-st.markdown('<div class="footer-note">PUBLIC SEC DATA · VERIFY COVERAGE BEFORE MODELING<br>Original reported line items are preserved where extractable. Banking, insurance, foreign issuers, and older filings can use different taxonomies or formats.</div>', unsafe_allow_html=True)
+st.markdown('<div class="footer-note">Financial Historian runs on your computer. Review coverage and source filings before using figures in a model.</div>', unsafe_allow_html=True)

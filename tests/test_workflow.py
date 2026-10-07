@@ -45,14 +45,22 @@ def test_entire_workflow_keeps_revisions_custom_tags_and_printed_cash_sign(monke
     bundle = service.generate(company, progress=messages.append)
     assert set(bundle.statements) == set(STATEMENTS)
     assert len(bundle.coverage) == 2
-    assert all(row.status == 'extracted' for row in bundle.coverage)
+    # One row per statement is a partial parse, not a complete statement.
+    assert all(row.status == 'partial' for row in bundle.coverage)
+    assert all('Core rows not verified' in row.detail for row in bundle.coverage)
     workbook = load_workbook(BytesIO(build_workbook(bundle)))
     revenue = next(row for row in bundle.statements['Profit & Loss'] if row.tag == 'sample:ReportedRevenue')
     assert revenue.values['2024-12-31'].value == 90_000_000
     assert revenue.values['2024-12-31'].filed == '2026-02-01'
     assert any('earlier' in warning for warning in bundle.warnings)
-    assert workbook['Profit & Loss']['C5'].value == 90
-    assert workbook['Cash Flow']['D5'].value == -20
+    def sourced_cell(sheet, tag, period):
+        column = next(cell.column for cell in sheet[4] if cell.value == period)
+        return next(row[column - 1] for row in sheet.iter_rows(min_row=5)
+                    if row[column - 1].comment and tag in row[column - 1].comment.text)
+
+    assert sourced_cell(workbook['Profit & Loss'], 'sample:ReportedRevenue', '2024-12-31').value == 90
+    capex = sourced_cell(workbook['Cash Flow Detail'], 'us-gaap:PaymentsToAcquirePropertyPlantAndEquipment', '2025-12-31')
+    assert capex.value == -20
     assert any(fact.value == 20_000_000 and fact.presentation_value == -20_000_000 for fact in bundle.raw_facts)
-    assert workbook['Cash Flow']['D5'].comment and '2026-02-01' in workbook['Cash Flow']['D5'].comment.text
+    assert capex.comment and '2026-02-01' in capex.comment.text
     assert messages and 'all available' in messages[0]

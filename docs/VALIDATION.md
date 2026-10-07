@@ -1,4 +1,63 @@
-# First-version validation
+# Validation record
+
+
+## Workbook correction and interface redesign (0.2.0)
+
+The user-supplied complete Apple export exposed defects missed by the initial
+latest-filing checks. It was compared directly with the Reliance presentation
+reference. The old export split equivalent revenue/net-income rows, suppressed
+available standardized figures behind partial HTML tables, lost split-cell
+negative numbers, and treated a few rows in three statements as full extraction.
+
+An offline reconstruction used the uploaded workbook's 7,157 source records and
+34 filing records. No new SEC documents were fetched and no missing earlier data
+was invented. The reconstructed workbook showed:
+
+| Check | Old export | Corrected assembly |
+| --- | --- | --- |
+| Income statement rows | 30 | 17 |
+| Populated income statement cells | 263 | 292 |
+| Balance sheet rows | 83 | 43 |
+| Populated balance sheet cells | 639 | 665 |
+| Cash flow detail rows | 65 | 47 |
+| Populated cash flow detail cells | 451 | 509 |
+| Basic/diluted EPS and share counts, 2010–2016 | Missing | All 28 observations recovered |
+
+For 2016, recovered reported diluted EPS is 8.31, investing cash flow is
+-45,977 million USD, and financing cash flow is -20,890 million USD. Operating
+cash flow of 66,231 million gives a net movement of -636 million, matching the
+change between reported opening and closing cash. Values are sourced rather
+than calculated into missing statement cells. Continuing-operation cash totals
+remain separate from total-operation figures. Original XBRL outflow signs and
+printed cash-flow signs remain individually traceable.
+
+The offline reconstruction retains all original source observations. Some
+standardized note/disclosure balances appear only in the Data Sheet when the
+native statement does not present them; none of the previously selected native
+financial monetary lines or company-specific statement lines was lost. Par value
+and authorized-share descriptor facts are kept out of the main balance sheet.
+
+The actual input cannot supply income/cash-flow figures before 2007 or balance
+sheet figures before 2000. The new filing-index fallback is tested with mocked
+archive records; it has not been used here to establish earlier live coverage.
+Coverage checks also expose a 1 million USD disagreement in selected 2007 balance
+sheet totals from different filing vintages. Historical EPS remains as reported,
+with differing stock-split bases explicitly disclosed.
+
+All 186 tests passed on both Python 3.12.14 and Python 3.14.6, with no skipped
+tests. Dependency checks passed in both environments.
+
+The light interface was exercised in Chromium at desktop and mobile widths with
+an offline mocked SEC service, including first-launch contact setup, company
+search/selection, progress and downloading actual Excel bytes. No fixture contact
+was sent to the SEC. Streamlit AppTest covers settings/privacy, state reset,
+source signs, failed retrieval and coverage-only output. These are Linux checks;
+actual Windows execution and a new live full-history SEC retrieval remain unrun.
+
+Excel generation on a synthetic 32-year / 20,160-raw-observation workload improved
+from 26.29 seconds to 9.72 seconds in this environment. The smaller real uploaded
+Apple dataset exported in approximately 3.9 seconds. Network retrieval time is
+separate and depends on SEC responses and the local cache.
 
 ## Launcher correction and Python 3.14.6
 

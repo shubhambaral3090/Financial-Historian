@@ -45,6 +45,8 @@ class Fact:
     # occupying the verified full-year presentation column in start/end.
     row_role: str = ""
     source_instant: str | None = None
+    # Reported section disambiguates repeated labels such as "Other".
+    section: str = ""
 
 
 @dataclass
@@ -53,6 +55,10 @@ class StatementRow:
     label: str
     unit: str
     values: dict[str, Fact] = field(default_factory=dict)
+    # Only verified equivalent source concepts may share a historical row.
+    accepted_tags: set[str] = field(default_factory=set)
+    section: str = ""
+    is_total: bool = False
 
 
 @dataclass(frozen=True)

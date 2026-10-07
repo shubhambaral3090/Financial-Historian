@@ -2,7 +2,11 @@
 
 A private, local Python application for researching the annual financial history of U.S. public companies. Search by company name, ticker, or SEC CIK, then download an Excel workbook containing available annual statements and their SEC sources.
 
-The browser interface uses a dark terminal style. The app connects to public SEC endpoints and does not require a paid subscription or API key.
+The browser interface uses a clean, light layout with company search, a single changing progress message, and a prominent Excel download. The app connects to public SEC endpoints and does not require a paid subscription or API key.
+
+![Financial Historian interface with demonstration data](docs/interface-preview.png)
+
+*Interface preview using offline demonstration data.*
 
 ## Start on Windows 11
 
@@ -26,7 +30,7 @@ Structured company facts are strongest in the XBRL era, generally around 2009 on
 
 For comparable annual periods, the app favors values appearing in the **latest eligible annual filing** among the retrieved records. This is a useful starting point for historical analysis, but a later comparative value does not by itself prove a formal restatement. Filing dates, SEC tags, units, extraction methods, selection notes, and source links make the choice reviewable. The workbook does not automatically normalize one-time items or create forecasts, valuations, or an investment recommendation.
 
-The workbook presents Profit & Loss, Balance Sheet, and Cash Flow statements and supporting source/coverage information. Statement sheets display currency amounts in millions, with units clearly labeled, and preserve the printed statement sign where it is extractable. The Data Sheet keeps the underlying reported XBRL values, which can use a positive conceptual value for an outflow printed as negative. Per-share values, share counts, and other units are not scaled as currency. Missing values remain missing, rather than becoming zero. Company-specific tags are retained where extractable; older or unusual filings, foreign issuers, financial institutions, and changed taxonomies can limit comparability. Review source filings and coverage notes before using the export in a financial model.
+The workbook presents Profit & Loss, Balance Sheet, and a compact Cash Flow summary with a separate Cash Flow Detail sheet. Verified equivalent financial concepts share a continuous historical row, while each cell retains its original tag and filing. Distinct scopes, including current/noncurrent balances and continuing/total operations, remain separate. Empty years at the edges of a statement are listed in coverage rather than displayed as empty columns; missing years within the retrieved span stay visible. Statement sheets display currency amounts in millions, with units clearly labeled, and preserve the printed statement sign where it is extractable. The Data Sheet keeps the underlying reported XBRL values, which can use a positive conceptual value for an outflow printed as negative. Per-share values, share counts, and other units are not scaled as currency. Missing values remain missing, rather than becoming zero. Company-specific tags are retained where extractable; older or unusual filings, foreign issuers, financial institutions, and changed taxonomies can limit comparability. Reported EPS and share counts are not uniformly adjusted for stock splits across the full history. Review source filings, stock splits, and coverage notes before using the export in a financial model. Core-row checks and available balance/cash reconciliations identify some extraction problems; passing them does not establish a complete or audited statement.
 
 ## Local files and privacy
 
@@ -57,4 +61,4 @@ On Windows, activate the environment with `.venv\Scripts\activate` instead. The 
 
 Network access to `www.sec.gov` and `data.sec.gov` is needed for SEC retrieval. Dependency installation uses PyPI and its package distribution hosts. SEC access may be refused on some hosted or corporate networks even with a valid identifying user-agent. In that case, retry from the local Windows installation and preserve secure certificate verification. Offline tests validate extraction and workbook behavior; they cannot prove live SEC accessibility from your network.
 
-If retrieval fails, use **Diagnostics & local files → Download diagnostic log** in the sidebar. Check the SEC contact, internet access, and reported coverage before retrying. Refreshing reloads filing indexes and structured facts from the SEC; previously filed primary documents can be reused from the local cache.
+If retrieval fails, use **Help & diagnostics → Download diagnostic log** in the sidebar. Check the SEC contact, internet access, and reported coverage before retrying. Refreshing reloads filing indexes and structured facts from the SEC; previously filed primary documents can be reused from the local cache.

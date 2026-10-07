@@ -1,8 +1,9 @@
 """Conservative, source-preserving annual SEC financial statement extraction.
 
 Inline XBRL is read only from explicitly headed consolidated statement tables.
-The SEC companyfacts endpoint is a useful fallback, but has no presentation tree:
-its concepts remain separate reported rows and are never added into invented totals.
+The SEC companyfacts endpoint is a useful fallback, but has no presentation tree.
+Verified equivalent concepts can share historical rows; distinct scopes remain
+separate and source facts are never added into invented statement totals.
 """
 from __future__ import annotations
 
@@ -95,6 +96,7 @@ EffectOfExchangeRateChangesOnCashAndCashEquivalents PurchaseOfPropertyPlantAndEq
 DividendsPaid InterestPaid IncomeTaxesPaidRefund
 """.split()
 _TAG_STATEMENT = {**dict.fromkeys(_INCOME, STATEMENTS[0]), **dict.fromkeys(_BALANCE, STATEMENTS[1]), **dict.fromkeys(_CASH, STATEMENTS[2])}
+_CP1252_PUNCTUATION = {code: bytes([code]).decode("cp1252") for code in range(128, 160) if code not in {129, 141, 143, 144, 157}}
 
 
 def _local(name: str) -> str:
@@ -108,7 +110,11 @@ def _text(node) -> str:
         return ""
     # Styled spans may split a word ("INC" + "OME") without a whitespace
     # boundary. Preserve that text rather than inserting spaces inside words.
-    return re.sub(r"\s+", " ", "".join(node.itertext())).strip()
+    text = "".join(node.itertext())
+    # Old SEC HTML often has Windows-1252 punctuation without a charset. lxml
+    # then exposes control-code characters, such as \x92, in company labels.
+    text = text.translate(_CP1252_PUNCTUATION)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _attr(node, key: str, default: str = "") -> str:
@@ -309,18 +315,81 @@ def _presentation_value(node) -> float | None:
     return _number(text, transform=_attr(node, "format"), scale=_attr(node, "scale", "0"))
 
 
+def _label_cell(row):
+    if row is None:
+        return None
+    for cell in row.xpath("./td|./th"):
+        label = _text(cell).strip(" :\u00a0")
+        if re.search(r"[A-Za-z]", label) and not re.fullmatch(r"[A-Z]{3}|\d{4}", label):
+            return cell
+    return None
+
+
 def _row_label(node, tag: str) -> str:
     row = _nearest(node, "tr")
     if row is not None:
-        cells = row.xpath("./td|./th")
-        for cell in cells:
-            if any(isinstance(child.tag, str) and _local(child.tag) in {"nonfraction", "fraction"} for child in cell.iter()):
-                continue
-            label = _text(cell).strip(" :\u00a0")
-            if re.search(r"[A-Za-z]", label) and not re.fullmatch(r"[A-Z]{3}|\d{4}", label):
-                return label
+        cell = _label_cell(row)
+        if cell is not None:
+            return _text(cell).strip(" :\u00a0")
     local = tag.rsplit(":", 1)[-1]
     return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", local)
+
+
+def _section_heading(label: str, statement: str) -> str | None:
+    """Recognize presentation groups, without treating arbitrary prose as one."""
+    label = re.sub(r"\s+", " ", label).strip(" :.").lower()
+    if statement == STATEMENTS[2]:
+        if re.search(r"^supplemental\b", label):
+            return "Supplemental disclosures"
+        for activity in ("operating", "investing", "financing"):
+            if re.fullmatch(rf"(?:cash flows? (?:from|used in|provided by) )?{activity} activities", label):
+                return activity.capitalize() + " activities"
+    elif statement == STATEMENTS[1]:
+        if re.fullmatch(r"(?:stockholders|shareholders|owners)[’']? equity(?: \(deficit\))?", label):
+            return "Equity"
+        for name in ("current assets", "noncurrent assets", "non-current assets", "current liabilities", "noncurrent liabilities", "non-current liabilities", "assets", "liabilities"):
+            if label == name:
+                return name.replace("noncurrent", "non-current").capitalize()
+    elif statement == STATEMENTS[0]:
+        if re.search(r"weighted.average.*shares|shares.*(?:used|computing|calculation)", label):
+            return "Weighted average shares"
+        if re.search(r"(?:earnings|income|loss).*per\s+(?:common\s+)?share|^per share", label):
+            return "Earnings per share"
+        if label in {"operating expenses", "cost of sales", "cost of revenue", "net sales", "revenue", "revenues"}:
+            return label.capitalize()
+    return None
+
+
+def _section_after_total(label: str, statement: str, current: str) -> str:
+    if statement != STATEMENTS[1]:
+        return current
+    normalized = label.lower().strip(" :.")
+    if normalized == "total current assets":
+        return "Non-current assets"
+    if normalized == "total current liabilities":
+        return "Non-current liabilities"
+    if normalized == "total assets":
+        return "Liabilities"
+    if normalized == "total liabilities":
+        return "Equity"
+    return current
+
+
+def _inline_sections(table, statement: str) -> dict:
+    sections = {}
+    current = ""
+    for row in table.xpath("./tr|./thead/tr|./tbody/tr"):
+        label_cell = _label_cell(row)
+        if label_cell is None:
+            continue
+        label = _text(label_cell).strip(" :\u00a0")
+        data_nodes = [node for node in row.iter() if isinstance(node.tag, str) and _local(node.tag) == "nonfraction" and _nearest(node, "td") is not label_cell]
+        if not data_nodes:
+            current = _section_heading(label, statement) or current
+        sections[row] = current
+        if data_nodes:
+            current = _section_after_total(label, statement, current)
+    return sections
 
 
 def _cash_column_periods(nodes, contexts, filing: Filing) -> dict[int, tuple[str, str]]:
@@ -363,7 +432,7 @@ def _deduplicate(facts: Iterable[Fact]) -> list[Fact]:
     seen = set()
     result = []
     for fact in facts:
-        key = (fact.statement, fact.tag, fact.unit, fact.start, fact.end, fact.accession, fact.value, fact.presentation_value, fact.row_role, fact.source_instant)
+        key = (fact.statement, fact.tag, fact.unit, fact.start, fact.end, fact.accession, fact.value, fact.presentation_value, fact.row_role, fact.source_instant, fact.section)
         if key not in seen:
             seen.add(key)
             result.append(fact)
@@ -380,7 +449,14 @@ def parse_filing_html(content: bytes, filing: Filing) -> list[Fact]:
     if filing.form.upper() not in ANNUAL_FORMS:
         return []
     try:
-        root = html.fromstring(content)
+        # UTF-8 without a meta charset is common in SEC files. Decode it with an
+        # explicit parser; otherwise leave legacy byte encoding to lxml.
+        try:
+            content.decode("utf-8")
+            parser = html.HTMLParser(encoding="utf-8")
+        except UnicodeDecodeError:
+            parser = html.HTMLParser()
+        root = html.fromstring(content, parser=parser)
     except (etree.ParserError, ValueError):
         return []
     contexts, units = _contexts(root), _units(root)
@@ -416,7 +492,13 @@ def parse_filing_html(content: bytes, filing: Filing) -> list[Fact]:
             seen_main |= bool(old_facts)
             continue
         cash_columns = _cash_column_periods(inline_nodes, contexts, filing) if statement == STATEMENTS[2] else {}
+        sections = _inline_sections(table, statement)
         for node in inline_nodes:
+            row = _nearest(node, "tr")
+            if _nearest(node, "td") is _label_cell(row):
+                # Share authorizations and par values embedded in a common-stock
+                # label are disclosures, not the monetary statement cell.
+                continue
             context = contexts.get(_attr(node, "contextref"))
             unit = units.get(_attr(node, "unitref"))
             if not context or not unit or _attr(node, "nil").lower() in {"true", "1"}:
@@ -441,7 +523,7 @@ def parse_filing_html(content: bytes, filing: Filing) -> list[Fact]:
                 continue
             presentation_value = _presentation_value(node)
             explanation = "Instant cash balance assigned to its verified annual statement column; original context date is recorded separately." if row_role else ""
-            facts.append(Fact(tag, label, unit, value, start, end, filing.accession, filing.filed, filing.form, filing.source_url, statement, "inline-xbrl", selection_reason=explanation, presentation_value=presentation_value, row_role=row_role, source_instant=source_instant))
+            facts.append(Fact(tag, label, unit, value, start, end, filing.accession, filing.filed, filing.form, filing.source_url, statement, "inline-xbrl", selection_reason=explanation, presentation_value=presentation_value, row_role=row_role, source_instant=source_instant, section=sections.get(row, "")))
             seen_main = True
     return _deduplicate(facts)
 
@@ -559,6 +641,54 @@ def _grid_cells(row) -> list:
     return cells
 
 
+def _untagged_column_value(cells: list, columns: list[int], scale: str = "0") -> float | None:
+    """Read one dated group, including split currency and parenthesis cells.
+
+    A date header may span several physical columns. Combining arbitrary text
+    would concatenate adjacent numeric values, so require exactly one numeric
+    fragment and allow only empty/currency/sign cells around it.
+    """
+    if not columns or min(columns) >= len(cells):
+        return None
+    selected = []
+    seen = set()
+    for column in columns:
+        if column >= len(cells):
+            continue
+        cell = cells[column]
+        if cell not in seen:
+            selected.append(cell)
+            seen.add(cell)
+    tokens = [_text(cell) for cell in selected]
+    numerical = [token for token in tokens if re.search(r"\d", token)]
+    if len(numerical) != 1 or any(re.search(r"[A-Za-z]", token) for token in tokens):
+        return None
+    if any(not re.fullmatch(r"[\d\s.,$€£¥()+\-\u2212\u2013\u2014]*", token) for token in tokens):
+        return None
+    first, last = min(columns), max(columns)
+    # Headers sometimes cover only the number, with parentheses outside the
+    # colspan. Only attach neighboring symbols; never cross another number.
+    for index in range(first - 1, max(-1, first - 5), -1):
+        cell = cells[index]
+        if cell in seen:
+            continue
+        text = _text(cell)
+        if text and not re.fullmatch(r"[$€£¥(+\-\u2212\s]+", text):
+            break
+        tokens.insert(0, text)
+        seen.add(cell)
+    for index in range(last + 1, min(len(cells), last + 5)):
+        cell = cells[index]
+        if cell in seen:
+            continue
+        text = _text(cell)
+        if text and not re.fullmatch(r"[)\s]+", text):
+            break
+        tokens.append(text)
+        seen.add(cell)
+    return _number("".join(tokens), scale=scale)
+
+
 def _parse_untagged_table(table, statement: str, heading: str, filing: Filing) -> list[Fact]:
     rows = table.xpath("./tr|./thead/tr|./tbody/tr")
     header_text = heading + " " + " ".join(_text(row) for row in rows[:8])
@@ -584,8 +714,11 @@ def _parse_untagged_table(table, statement: str, heading: str, filing: Filing) -
     if not column_dates:
         return []
     scale = "6" if re.search(r"\bin\s+millions\b", header_text, re.I) else "3" if re.search(r"\bin\s+thousands\b", header_text, re.I) else "0"
+    period_columns = defaultdict(list)
+    for column, end in column_dates.items():
+        period_columns[end].append(column)
     facts = []
-    section = ""
+    section = unit_section = ""
     for row in rows[header_index + 1:]:
         cells = _grid_cells(row)
         if not cells:
@@ -593,22 +726,26 @@ def _parse_untagged_table(table, statement: str, heading: str, filing: Filing) -
         label = next((_text(cell).strip(" :") for cell in cells[:min(column_dates)] if re.search(r"[A-Za-z]", _text(cell))), "")
         if not label or len(label) > 250:
             continue
-        explicit_per_share = bool(re.search(r"per\s+(?:common\s+)?share|earnings\s+per|loss\s+per", label, re.I))
-        has_numbers = any(column < len(cells) and _number(_text(cells[column])) is not None for column in column_dates)
+        share_count_heading = _section_heading(label, statement) == "Weighted average shares"
+        explicit_per_share = not share_count_heading and bool(re.search(r"per\s+(?:common\s+)?share|earnings\s+per|loss\s+per", label, re.I))
+        has_numbers = any(_untagged_column_value(cells, columns) is not None for columns in period_columns.values())
         if not has_numbers:
+            found_section = _section_heading(label, statement)
+            if found_section:
+                section = found_section
             if explicit_per_share:
-                section = "per-share"
+                unit_section = "per-share"
             elif re.search(r"\b(?:shares?|weighted\s+average)\b", label, re.I):
-                section = "shares"
-            else:
-                section = ""
+                unit_section = "shares"
+            elif found_section:
+                unit_section = ""
             continue
-        grouped_eps = section == "per-share" and bool(re.search(r"\b(?:basic|diluted|continuing|discontinued|net\s+income|net\s+loss)\b", label, re.I))
+        grouped_eps = unit_section == "per-share" and bool(re.search(r"\b(?:basic|diluted|continuing|discontinued|net\s+income|net\s+loss)\b", label, re.I))
         per_share = explicit_per_share or grouped_eps
         shares = bool(re.search(r"\bshares?\b", label, re.I)) and not per_share
         # Bare share counts have different exceptions/scales across companies.
         # Do not apply a dollar scale to them without explicit evidence.
-        if shares or section == "shares" or (re.fullmatch(r"basic|diluted", label, re.I) and not per_share) or re.search(r"percent|percentage|tax\s+rate", label, re.I):
+        if shares or unit_section == "shares" or (re.fullmatch(r"basic|diluted", label, re.I) and not per_share) or re.search(r"percent|percentage|tax\s+rate", label, re.I):
             continue
         unit = "USD/shares" if per_share else "USD"
         row_scale = "0" if per_share else scale
@@ -616,10 +753,8 @@ def _parse_untagged_table(table, statement: str, heading: str, filing: Filing) -
         if not slug:
             continue
         tag = "html:" + re.sub(r"[^a-z]", "", statement.lower()) + ":" + slug
-        for column, end in column_dates.items():
-            if column >= len(cells):
-                continue
-            value = _number(_text(cells[column]), scale=row_scale)
+        for end, columns in period_columns.items():
+            value = _untagged_column_value(cells, columns, scale=row_scale)
             if value is None:
                 continue
             # Full-year text is an explicit condition, not a date invented from a
@@ -631,75 +766,163 @@ def _parse_untagged_table(table, statement: str, heading: str, filing: Filing) -
                 prior_year = final.year - 1
                 prior_end = date(prior_year, final.month, min(final.day, calendar.monthrange(prior_year, final.month)[1]))
                 start = (prior_end + timedelta(days=1)).isoformat()
-            facts.append(Fact(tag, label, unit, value, start, end, filing.accession, filing.filed, filing.form, filing.source_url, statement, "html-table", "Untagged annual table: year-start convention inferred; period end, label, currency and scale read from table.", presentation_value=value))
+            facts.append(Fact(tag, label, unit, value, start, end, filing.accession, filing.filed, filing.form, filing.source_url, statement, "html-table", "Untagged annual table: year-start convention inferred; period end, label, currency and scale read from table.", presentation_value=value, section=section))
+        section = _section_after_total(label, statement, section)
     # Duplicate human labels may refer to different subtotals. Reject contradictory
     # duplicates later; never silently add them together or overwrite one.
     return _deduplicate(facts)
 
 
 def assemble_bundle(company: Company, filings: list[Filing], facts: list[Fact], coverage: list[CoverageRecord], warnings: list[str]) -> StatementBundle:
-    """Choose the latest comparable reported annual observations with an audit trail."""
+    """Align proven equivalent rows without losing source identities or revisions.
+
+    The latest native table supplies the presentation. A newer standardized fact
+    can update the same concept, while known missing core lines can be supplied
+    by the same or a newer filing. A partial native table must not hide EPS or
+    cash-flow totals that the very same filing supplies through companyfacts.
+    """
+    from .normalization import (clean_label, concept_for, fallback_presentation,
+                                include_on_face, row_identity, row_order)
+
     accepted = [fact for fact in _deduplicate(facts) if fact.statement in STATEMENTS and fact.form.upper() in ANNUAL_FORMS and math.isfinite(fact.value) and _date(fact.end) and (fact.statement == STATEMENTS[1] and fact.start is None or fact.statement != STATEMENTS[1] and _annual_duration(fact.start, fact.end))]
     result = StatementBundle(company=company, filings=filings, raw_facts=accepted, coverage=coverage, warnings=list(warnings))
+    source_rank = {"inline-xbrl": 3, "html-table": 2, "xbrl-instance": 1, "companyfacts": 0}
+    native_types = {"inline-xbrl", "html-table"}
     by_period = defaultdict(list)
-    for fact in accepted:
-        by_period[(fact.statement, fact.end)].append(fact)
     observations = defaultdict(list)
     for fact in accepted:
-        observations[(fact.statement, fact.tag, fact.unit, fact.end, fact.row_role)].append(fact)
+        by_period[(fact.statement, fact.end)].append(fact)
+        observations[(fact.statement, row_identity(fact), fact.end)].append(fact)
+
+    # If a filing explicitly presents two candidate aliases with different values,
+    # their scopes are not proven equivalent for this company. Keep both tags.
+    aliases = defaultdict(list)
+    for fact in accepted:
+        aliases[(fact.statement, fact.end, fact.accession, row_identity(fact), fact.extraction)].append(fact)
+    split_aliases = set()
+    for (statement, end, accession, identity, extraction), values in aliases.items():
+        if len({fact.tag for fact in values}) > 1 and len({fact.presentation_value if fact.presentation_value is not None else fact.value for fact in values}) > 1:
+            split_aliases.add((statement, identity))
+    if split_aliases:
+        result.warnings.append("Some similarly named concepts have different values within a reported statement. Their source tags remain separate instead of merging different scopes.")
+
+    def identity(fact):
+        key = row_identity(fact)
+        return (fact.tag, key[1], key[2]) if (fact.statement, key) in split_aliases else key
+
     rows = {statement: {} for statement in STATEMENTS}
+    ordering = {}
     fallback_used = False
     untagged_used = False
-    for (statement, end), candidates in sorted(by_period.items(), key=lambda item: item[0][1], reverse=True):
-        latest_observation = max((fact.filed, fact.accession) for fact in candidates)
-        main_table = [fact for fact in candidates if fact.extraction in {"inline-xbrl", "html-table"} and (fact.filed, fact.accession) == latest_observation]
+    mixed_periods = set()
+    supplemented_periods = set()
+    for (statement, end), all_candidates in sorted(by_period.items(), key=lambda item: item[0][1], reverse=True):
+        candidates = [fact for fact in all_candidates if include_on_face(fact)]
+        native = [fact for fact in candidates if fact.extraction in native_types]
+        latest_native = max(((fact.filed, fact.accession) for fact in native), default=None)
+        main_table = [fact for fact in native if (fact.filed, fact.accession) == latest_native]
+        baseline_keys = {identity(fact) for fact in main_table}
+        selected_candidates = list(main_table)
         if main_table:
-            # Use one filing's presentation for each statement/period. Mixing an
-            # old statement with a newer reclassification can double count rows.
-            latest = max((fact.filed, fact.accession) for fact in main_table)
-            candidates = [fact for fact in main_table if (fact.filed, fact.accession) == latest]
-            inline = [fact for fact in candidates if fact.extraction == "inline-xbrl"]
-            if inline:
-                candidates = inline
+            for fact in candidates:
+                if fact.extraction in native_types or (fact.filed, fact.accession) < latest_native:
+                    continue
+                concept = concept_for(fact)
+                key = identity(fact)
+                # No arbitrary supplemental note concepts. Balance-sheet amounts
+                # with an explicit curated face identity can fill a partial table.
+                same_filing_cash_detail = statement == STATEMENTS[2] and (fact.filed, fact.accession) == latest_native
+                supplements = concept and (concept.supplement or statement == STATEMENTS[1] or same_filing_cash_detail)
+                if key in baseline_keys or supplements:
+                    selected_candidates.append(fact)
         else:
-            fallback_used = True
-            candidates = [fact for fact in candidates if fact.extraction not in {"inline-xbrl", "html-table"}]
+            selected_candidates = [fact for fact in candidates if fact.extraction not in native_types]
         grouped = defaultdict(list)
-        for fact in candidates:
-            grouped[(fact.tag, fact.unit, fact.row_role)].append(fact)
+        for fact in selected_candidates:
+            grouped[identity(fact)].append(fact)
         for key, values in grouped.items():
             latest = max((fact.filed, fact.accession) for fact in values)
             winners = [fact for fact in values if (fact.filed, fact.accession) == latest]
-            unique = {(fact.value, fact.start, fact.presentation_value) for fact in winners}
+            best_rank = max(source_rank.get(fact.extraction, 0) for fact in winners)
+            best = [fact for fact in winners if source_rank.get(fact.extraction, 0) == best_rank]
+            # Native HTML annual starts are conventional; they must not conflict
+            # with a more precise XBRL context from the same reported table.
+            unique = {(fact.value, fact.start, fact.presentation_value) for fact in best}
+            recovered_conflict = False
             if len(unique) != 1:
-                result.warnings.append(f"Ambiguous {key[0]} ({key[1]}) for {end} in {latest[1]}: conflicting consolidated observations were left blank.")
-                continue
-            picked = max(winners, key=lambda fact: {"inline-xbrl": 3, "html-table": 2, "xbrl-instance": 1, "companyfacts": 0}.get(fact.extraction, 0))
-            prior = [fact for fact in observations[(statement, picked.tag, picked.unit, end, picked.row_role)] if (fact.filed, fact.accession) < latest]
+                # A malformed untagged table can mislabel a share count as EPS.
+                # Recover only from unanimous independently standardized facts
+                # for the same known identity, unit, annual period and filing.
+                standardized = [fact for fact in winners if fact.extraction in {"companyfacts", "xbrl-instance"} and concept_for(fact)]
+                standard_values = {(fact.value, fact.start, fact.presentation_value) for fact in standardized}
+                if all(fact.extraction == "html-table" for fact in best) and standardized and len(standard_values) == 1:
+                    best = sorted(standardized, key=lambda fact: source_rank.get(fact.extraction, 0), reverse=True)
+                    recovered_conflict = True
+                    result.warnings.append(f"Ambiguous HTML {key[0]} ({key[1]}) for {end} in {latest[1]}: used the consistent standardized fact from that same filing; conflicting HTML observations remain in source records.")
+                else:
+                    result.warnings.append(f"Ambiguous {key[0]} ({key[1]}) for {end} in {latest[1]}: conflicting consolidated observations were left blank.")
+                    continue
+            picked = best[0]
+            prior = [fact for fact in observations[(statement, row_identity(picked), end)] if (fact.filed, fact.accession) < latest]
             if picked.start and any(fact.start and abs((_date(fact.start) - _date(picked.start)).days) > 14 for fact in prior):
                 result.warnings.append(f"{picked.label} ({picked.tag}), {end}: earlier observations cover different annual start dates; the latest period was selected and is not directly comparable.")
-            changed = any(not math.isclose(fact.value, picked.value, rel_tol=1e-10, abs_tol=1e-9) for fact in prior)
-            reason = "Latest available main-statement observation for this period." if main_table else "Latest available annual filing observation for this concept and period."
+            # Compare the same source concept's sign; HTML cash outflows are
+            # printed negative while corresponding XBRL payment values are debit
+            # positive. Presentation comparison avoids a false revision warning.
+            display = fallback_presentation(picked)
+            display = picked.value if display is None else display
+            changed = any(not math.isclose(fact.value if fallback_presentation(fact) is None else fallback_presentation(fact), display, rel_tol=1e-10, abs_tol=1e-9) for fact in prior)
+            is_fallback = picked.extraction not in native_types
+            fallback_used |= is_fallback
+            supplement = bool(main_table and key not in baseline_keys and is_fallback)
+            if supplement:
+                supplemented_periods.add((statement, end))
+                reason = "Core statement line missing from extracted primary table; filled from a standardized fact in the same or a later annual filing."
+            elif is_fallback:
+                reason = "Latest available annual filing observation for this concept and period."
+            else:
+                reason = "Latest available main-statement observation for this period."
+            if main_table and latest != latest_native:
+                mixed_periods.add((statement, end))
+                reason += " This concept is from a later filing than the retained native statement layout; check statement reconciliation."
             if changed:
                 reason += " Value differs from an earlier filing; may reflect a restatement or reclassification."
-                result.warnings.append(f"{picked.label} ({picked.tag}), {end}: the selected later filing changes an earlier observation; see source records.")
+                result.warnings.append(f"{clean_label(picked.label)} ({picked.tag}), {end}: the selected later filing changes an earlier observation; see source records.")
+            if recovered_conflict:
+                reason += " Conflicting HTML observations were excluded; a consistent standardized fact from the same filing supplies this value."
             if picked.selection_reason:
                 reason += " " + picked.selection_reason
-            picked = replace(picked, selection_reason=reason)
+            presentation = fallback_presentation(picked)
+            if presentation is not None and picked.presentation_value is None:
+                reason += " Cash-flow presentation uses the defined contribution sign of this standard concept; the original source value is retained."
+            concept = concept_for(picked)
+            picked = replace(picked, selection_reason=reason, presentation_value=presentation,
+                             section=concept.section if concept else picked.section)
             untagged_used |= picked.extraction == "html-table"
             if picked.start:
                 duration = (_date(picked.end) - _date(picked.start)).days + 1
                 if duration < 340 or duration > 380:
                     result.warnings.append(f"{picked.end}: selected annual period spans {duration} days; review for a transition fiscal year before comparing or forecasting.")
-            row = rows[statement].get(key)
-            if row is None:
-                row = StatementRow(picked.tag, picked.label, picked.unit)
-                rows[statement][key] = row
-            row.values[end] = picked
-    result.statements = {statement: list(rows[statement].values()) for statement in STATEMENTS}
+            statement_row = rows[statement].get(key)
+            if statement_row is None:
+                label = concept.label if concept else clean_label(picked.label)
+                if (statement, row_identity(picked)) in split_aliases:
+                    label += " [" + picked.tag.rsplit(":", 1)[-1] + "]"
+                statement_row = StatementRow(picked.tag, label, picked.unit,
+                                             accepted_tags={picked.tag}, section=picked.section,
+                                             is_total=bool(concept and concept.is_total))
+                rows[statement][key] = statement_row
+                ordering[(statement, key)] = row_order(picked)
+            statement_row.accepted_tags.add(picked.tag)
+            statement_row.values[end] = picked
+    result.statements = {statement: [row for key, row in sorted(rows[statement].items(), key=lambda pair: ordering[(statement, pair[0])])] for statement in STATEMENTS}
     result.periods = sorted({end for statement in result.statements.values() for row in statement for end in row.values} | {filing.report_date for filing in filings if filing.form.upper() in ANNUAL_FORMS and _date(filing.report_date)}, reverse=True)
     if fallback_used:
-        result.warnings.append("Some periods use SEC companyfacts/standard XBRL fallback. These concepts do not preserve statement presentation; overlapping concepts remain separate and must not be summed blindly.")
+        result.warnings.append("Some periods use SEC companyfacts/standard XBRL fallback. Only explicit equivalent row identities are aligned; source tags and units remain in each cell's source record. Other concepts must not be summed blindly.")
+    if supplemented_periods:
+        result.warnings.append(f"Standardized source facts fill missing core lines in {len(supplemented_periods)} statement/year combinations; each filled cell identifies this fallback.")
+    for statement, end in sorted(mixed_periods):
+        result.warnings.append(f"{statement}, {end}: latest values come from multiple filings. Older reported rows are retained where no later equivalent is available; check reconciliation and source dates before modeling.")
     if untagged_used:
         result.warnings.append("Some older periods were extracted from untagged HTML tables. Period start dates use the stated full-year convention; compare every figure and unit against the linked filing before modeling.")
     if any(filing.form.upper() in {"10-KT", "10-KT/A"} for filing in filings):

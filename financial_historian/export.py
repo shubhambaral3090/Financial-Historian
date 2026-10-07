@@ -1,6 +1,7 @@
 """Build a sourced workbook without converting reported units or inventing values."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
 from io import BytesIO
 import math
@@ -13,6 +14,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from .models import Fact, STATEMENTS, StatementBundle, StatementRow
+from .normalization import concept_for
 
 
 MAX_ROWS = 1_048_576
@@ -42,6 +44,21 @@ _TEAL = "007F82"
 _PALE = "EFF6F8"
 _MUTED = "526878"
 _LINE = "DCE6EB"
+
+# Reuse immutable style objects across the potentially large raw fact sheet.
+_BODY_FONT = Font(name="Aptos", size=10, color=_INK)
+_BOLD_FONT = Font(name="Aptos", size=10, color=_INK, bold=True)
+_MUTED_FONT = Font(name="Aptos", size=10, color=_MUTED)
+_HEADER_FONT = Font(name="Aptos", size=10, bold=True, color="FFFFFF")
+_HEADER_FILL = PatternFill("solid", fgColor=_INK)
+_PALE_FILL = PatternFill("solid", fgColor=_PALE)
+_TOTAL_FILL = PatternFill("solid", fgColor="E8F1EE")
+_BODY_BORDER = Border(bottom=Side(style="hair", color=_LINE))
+_TOTAL_BORDER = Border(top=Side(style="thin", color="8DA59D"), bottom=Side(style="thin", color=_LINE))
+_TEXT_ALIGNMENT = Alignment(vertical="center", wrap_text=True)
+_VALUE_ALIGNMENT = Alignment(horizontal="right", vertical="center")
+_PLAIN_ALIGNMENT = Alignment(vertical="top")
+_NUMBER_FORMAT = '#,##0.00;[Red](#,##0.00);0.00'
 
 
 def _write_text(cell, value: object) -> None:
@@ -89,7 +106,7 @@ def _valid_fact(row: StatementRow, period: str, fact: Fact, statement: str) -> s
         return f"Fact period end {fact.end} differs from column period {period}."
     if fact.unit != row.unit:
         return f"Fact unit {fact.unit} differs from row unit {row.unit}; units were not mixed."
-    if fact.tag != row.tag:
+    if fact.tag != row.tag and fact.tag not in row.accepted_tags:
         return "Fact SEC tag differs from its row tag."
     if fact.statement != statement:
         return "Fact statement differs from its worksheet."
@@ -107,6 +124,7 @@ def _fact_comment(fact: Fact, display_unit: str, rejection: str | None = None) -
         f"Annual display period end: {fact.end}",
         f"Original instant context: {fact.source_instant or (fact.end if fact.start is None else 'Not an instant fact')}",
         f"Row role: {fact.row_role or 'Reported statement row'}",
+        f"Reported section: {fact.section or 'Not supplied'}",
         f"Filed: {fact.filed}", f"Form: {fact.form}",
         f"Accession: {fact.accession}", f"Source filing: {fact.source_url}",
         f"Extraction: {fact.extraction}",
@@ -148,20 +166,128 @@ def _headers(sheet, headers: list[str]) -> None:
     for col, value in enumerate(headers, 1):
         cell = sheet.cell(HEADER_ROW, col)
         _write_text(cell, value)
-        cell.fill = PatternFill("solid", fgColor=_TEAL)
-        cell.font = Font(name="Aptos", size=10, bold=True, color="FFFFFF")
-        cell.alignment = Alignment(wrap_text=True, vertical="center")
+        cell.fill = _HEADER_FILL
+        cell.font = _HEADER_FONT
+        cell.alignment = _TEXT_ALIGNMENT
     sheet.row_dimensions[HEADER_ROW].height = 30
 
 
 def _style_row(sheet, row: int, columns: int) -> None:
     for col in range(1, columns + 1):
         cell = sheet.cell(row, col)
-        cell.font = Font(name="Aptos", size=10, color=_INK)
-        cell.alignment = Alignment(vertical="top", wrap_text=col in {1, 2})
-        cell.border = Border(bottom=Side(style="hair", color=_LINE))
+        cell.font = _BODY_FONT
+        cell.alignment = _TEXT_ALIGNMENT if col in {1, 2} else _PLAIN_ALIGNMENT
+        cell.border = _BODY_BORDER
         if row % 2:
-            cell.fill = PatternFill("solid", fgColor=_PALE)
+            cell.fill = _PALE_FILL
+
+
+def _statement_periods(rows: list[StatementRow], periods: list[str]) -> list[str]:
+    """Trim only wholly empty edges; keep internal gaps and every selected year."""
+    occupied = {period for row in rows for period in row.values}
+    populated = [index for index, period in enumerate(periods) if period in occupied]
+    return periods[populated[0]:populated[-1] + 1] if populated else []
+
+
+def _cash_summary_rank(row: StatementRow) -> int | None:
+    ranks = {
+        "cash_begin": 0, "restricted_cash_begin": 0,
+        "cfo": 1, "cfo_continuing": 1,
+        "cfi": 2, "cfi_continuing": 2,
+        "cff": 3, "cff_continuing": 3,
+        "exchange_effect": 4, "restricted_exchange_effect": 4,
+        "cash_change": 5, "restricted_cash_change": 5,
+        "cash_end": 6, "restricted_cash_end": 6,
+    }
+    keys = {concept.key for fact in row.values.values() if (concept := concept_for(fact))}
+    ranked = {ranks[key] for key in keys if key in ranks}
+    return next(iter(ranked)) if len(ranked) == 1 else None
+
+
+def _statement_note(rows: list[StatementRow]) -> tuple[str, set[str]]:
+    currencies = {row.unit for row in rows if row.unit in CURRENCIES}
+    unit_note = f"{next(iter(currencies))} million" if len(currencies) == 1 else "Currency amounts in millions; currency shown in each row"
+    return f"{unit_note} · Other units shown in row labels · Blank = unavailable · Reported annual figures", currencies
+
+
+def _statement_label(row: StatementRow, currencies: set[str]) -> str:
+    if row.unit in CURRENCIES and len(currencies) == 1:
+        return row.label
+    return f"{row.label} ({_display_unit(row.unit)})"
+
+
+def _write_statement(workbook, title: str, statement: str, company: str,
+                     rows: list[StatementRow], periods: list[str], displayed: dict,
+                     summary: bool = False) -> int:
+    columns = max(2, len(periods) + 1)
+    has_sections = not summary and any(row.section for row in rows)
+    # Unclassified historical rows must not appear to belong to the preceding
+    # section (for example an old asset line below the equity section).
+    sections = [(row.section or "Other reported line items") if has_sections else "" for row in rows]
+    section_count = sum(bool(section) and (index == 0 or section != sections[index - 1])
+                        for index, section in enumerate(sections))
+    _check_dimensions(len(rows) + section_count + HEADER_ROW, columns, title)
+    note, currencies = _statement_note(rows)
+    sheet = _base_sheet(workbook, title, company, note, columns)
+    sheet.sheet_view.zoomScale = 90
+    sheet.sheet_properties.tabColor = _TEAL if title in STATEMENTS else _MUTED
+    sheet.freeze_panes = "B5"
+    sheet.column_dimensions["A"].width = 52
+    for col in range(2, columns + 1):
+        sheet.column_dimensions[get_column_letter(col)].width = 16
+    guidance = ("Cash Flow Detail contains every reported cash-flow row. Values here are reported totals, not calculated estimates."
+                if summary else "Select a value for its SEC filing; its cell note records the original label, tag, unit and filing date.")
+    if not rows:
+        guidance = ("No supported statement values are available for this cash summary. Cash Flow Detail may contain individual rows; review Sources & Coverage."
+                    if summary else "No supported statement values were extracted. Review Sources & Coverage for filing availability and gaps.")
+    _write_text(sheet.cell(3, 1), guidance)
+    sheet.cell(3, 1).font = _MUTED_FONT
+    sheet.cell(3, 1).alignment = _TEXT_ALIGNMENT
+    sheet.merge_cells(start_row=3, start_column=1, end_row=3, end_column=columns)
+    sheet.row_dimensions[3].height = 28
+    _headers(sheet, ["Line item", *periods])
+    row_number = FIRST_DATA_ROW
+    previous_section = ""
+    withheld = 0
+    for row, section in zip(rows, sections):
+        if section and section != previous_section:
+            for col in range(1, columns + 1):
+                cell = sheet.cell(row_number, col)
+                cell.fill = _PALE_FILL
+                cell.font = _BOLD_FONT
+            _write_text(sheet.cell(row_number, 1), section)
+            sheet.row_dimensions[row_number].height = 25
+            row_number += 1
+        previous_section = section
+        label = _statement_label(row, currencies)
+        _write_text(sheet.cell(row_number, 1), label)
+        sheet.row_dimensions[row_number].height = max(22, 14 * math.ceil(len(label) / 49))
+        for col in range(1, columns + 1):
+            cell = sheet.cell(row_number, col)
+            cell.font = _BOLD_FONT if row.is_total or summary else _BODY_FONT
+            cell.alignment = _TEXT_ALIGNMENT if col == 1 else _VALUE_ALIGNMENT
+            if row.is_total or summary:
+                cell.fill = _TOTAL_FILL
+                cell.border = _TOTAL_BORDER
+        for col, period in enumerate(periods, 2):
+            fact = row.values.get(period)
+            if fact is None:
+                continue
+            cell = sheet.cell(row_number, col)
+            rejection = _valid_fact(row, period, fact, statement)
+            cell.comment = _fact_comment(fact, _display_unit(row.unit), rejection)
+            if rejection:
+                withheld += 1
+                continue
+            presented = fact.presentation_value if fact.presentation_value is not None else fact.value
+            cell.value = presented / 1_000_000 if row.unit in CURRENCIES else presented
+            cell.number_format = "#,##0;[Red](#,##0);0" if row.unit == "shares" else _NUMBER_FORMAT
+            _source_link(cell, fact.source_url)
+            displayed.setdefault(fact, []).append(f"'{title}'!{cell.coordinate}")
+        row_number += 1
+    sheet.print_options.horizontalCentered = True
+    sheet.print_area = f"A1:{get_column_letter(columns)}{max(HEADER_ROW, row_number - 1)}"
+    return withheld
 
 
 def _check_dimensions(rows: int, columns: int, sheet_name: str) -> None:
@@ -170,13 +296,15 @@ def _check_dimensions(rows: int, columns: int, sheet_name: str) -> None:
                          f"{MAX_COLUMNS:,}-column limit. No data was silently dropped.")
 
 
-def build_workbook(bundle: StatementBundle) -> bytes:
+def build_workbook(bundle: StatementBundle, progress: Callable[[str], None] | None = None) -> bytes:
     """Return an XLSX with reported statement rows and cell-level provenance.
 
     Periods are chronological, with no fixed history cap. Monetary units display
     in millions; source values are unscaled in Data Sheet. Inconsistent facts
     remain visible there but are withheld from the misleading statement cell.
     """
+    report = progress or (lambda message: None)
+    report("Checking workbook values and source records…")
     if any(statement not in STATEMENTS for statement in bundle.statements):
         raise ValueError("An unsupported statement worksheet was supplied; no rows were dropped.")
     periods = sorted(set(bundle.periods))
@@ -186,10 +314,6 @@ def build_workbook(bundle: StatementBundle) -> bytes:
                 raise ValueError
     except (TypeError, ValueError):
         raise ValueError("Annual period labels must be ISO dates (YYYY-MM-DD).") from None
-
-    columns = len(periods) + 3
-    for statement in STATEMENTS:
-        _check_dimensions(len(bundle.statements.get(statement, [])) + HEADER_ROW, columns, statement)
 
     raw_facts = list(bundle.raw_facts)
     seen = set(raw_facts)
@@ -209,7 +333,7 @@ def build_workbook(bundle: StatementBundle) -> bytes:
                 not isinstance(fact.presentation_value, (int, float)) or
                 not math.isfinite(fact.presentation_value)):
             raise ValueError("Statement presentation values must contain finite numeric values when supplied.")
-    _check_dimensions(len(raw_facts) + HEADER_ROW, 17, "Data Sheet")
+    _check_dimensions(len(raw_facts) + HEADER_ROW, 18, "Data Sheet")
     _check_dimensions(len(bundle.filings) + len(bundle.coverage) + len(bundle.warnings) + HEADER_ROW,
                       8, "Sources & Coverage")
 
@@ -219,57 +343,38 @@ def build_workbook(bundle: StatementBundle) -> bytes:
     workbook.properties.creator = "Financial Historian"
     displayed: dict[Fact, list[str]] = {}
     withheld = 0
+    omitted_periods: dict[str, list[str]] = {}
     for statement in STATEMENTS:
-        sheet = _base_sheet(workbook, statement, bundle.company.name,
-                            "Monetary units: millions of the reported currency. Shares, per-share amounts and other units: unscaled. Blank = unavailable.",
-                            columns)
-        _write_text(sheet.cell(3, 1), "Annual period end dates; click a value for its SEC filing and inspect its comment for provenance.")
-        sheet.cell(3, 1).font = Font(name="Aptos", size=10, italic=True, color=_MUTED)
-        _headers(sheet, ["Narration", "Display unit", *periods, "SEC tag / row identifier"])
-        sheet.freeze_panes = "C5"
-        sheet.column_dimensions["A"].width = 54
-        sheet.column_dimensions["B"].width = 21
-        for col in range(3, columns):
-            sheet.column_dimensions[get_column_letter(col)].width = 17
-        sheet.column_dimensions[get_column_letter(columns)].width = 52
+        report(f"Formatting {statement.lower()}…")
         rows = bundle.statements.get(statement, [])
-        for row_number, row in enumerate(rows, FIRST_DATA_ROW):
-            _style_row(sheet, row_number, columns)
-            _write_text(sheet.cell(row_number, 1), row.label)
-            _write_text(sheet.cell(row_number, 2), _display_unit(row.unit))
-            _write_text(sheet.cell(row_number, columns), row.tag)
-            for col, period in enumerate(periods, 3):
-                fact = row.values.get(period)
-                if fact is None:
-                    continue
-                cell = sheet.cell(row_number, col)
-                rejection = _valid_fact(row, period, fact, statement)
-                cell.comment = _fact_comment(fact, _display_unit(row.unit), rejection)
-                if rejection:
-                    withheld += 1
-                    continue
-                presented = fact.presentation_value if fact.presentation_value is not None else fact.value
-                cell.value = presented / 1_000_000 if row.unit in CURRENCIES else presented
-                cell.number_format = ("#,##0;[Red](#,##0);0" if row.unit == "shares"
-                                      else "#,##0.00;[Red](#,##0.00);0.00")
-                cell.alignment = Alignment(horizontal="right", vertical="top")
-                _source_link(cell, fact.source_url)
-                displayed.setdefault(fact, []).append(f"'{statement}'!{cell.coordinate}")
-        sheet.auto_filter.ref = f"A4:{get_column_letter(columns)}{max(HEADER_ROW, len(rows) + HEADER_ROW)}"
-        sheet.print_options.horizontalCentered = True
+        visible_periods = _statement_periods(rows, periods)
+        omitted_periods[statement] = [period for period in periods if period not in visible_periods]
+        if statement == "Cash Flow":
+            ranked = [(rank, index, row) for index, row in enumerate(rows)
+                      if (rank := _cash_summary_rank(row)) is not None]
+            summary_rows = [row for _, _, row in sorted(ranked)]
+            withheld += _write_statement(workbook, statement, statement, bundle.company.name,
+                                         summary_rows, visible_periods, displayed, summary=True)
+        else:
+            withheld += _write_statement(workbook, statement, statement, bundle.company.name,
+                                         rows, visible_periods, displayed)
+    cash_rows = bundle.statements.get("Cash Flow", [])
+    withheld += _write_statement(workbook, "Cash Flow Detail", "Cash Flow", bundle.company.name,
+                                 cash_rows, _statement_periods(cash_rows, periods), displayed)
 
+    report(f"Writing {len(raw_facts):,} source observations…")
     data = _base_sheet(workbook, "Data Sheet", bundle.company.name,
-                       "Raw source values and optional statement presentation values retain their reported units. Original instant contexts are separate from annual display periods. No monetary scaling or currency conversion is applied on this sheet.", 17)
+                       "Raw source values and optional statement presentation values retain their reported units. Original instant contexts are separate from annual display periods. No monetary scaling or currency conversion is applied on this sheet.", 18)
     _headers(data, ["Statement", "SEC tag / row identifier", "Reported label", "Reported unit", "Source/XBRL value (unscaled)",
                     "Annual display period start", "Annual display period end", "Accession", "Filed", "Form", "Extraction", "Selection reason",
                     "Source filing", "Displayed cells", "Statement presentation value (unscaled)",
-                    "Original source instant", "Row role"])
+                    "Original source instant", "Row role", "Reported section"])
     for row_number, fact in enumerate(raw_facts, FIRST_DATA_ROW):
-        _style_row(data, row_number, 17)
+        _style_row(data, row_number, 18)
         values = [fact.statement, fact.tag, fact.label, fact.unit, fact.value, fact.start, fact.end,
                   fact.accession, fact.filed, fact.form, fact.extraction, fact.selection_reason,
                   fact.source_url, "; ".join(displayed.get(fact, [])), fact.presentation_value,
-                  fact.source_instant, fact.row_role]
+                  fact.source_instant, fact.row_role, fact.section]
         for col, value in enumerate(values, 1):
             cell = data.cell(row_number, col)
             if col in {5, 15} and value is not None:
@@ -279,10 +384,11 @@ def build_workbook(bundle: StatementBundle) -> bytes:
                 _write_text(cell, value)
         _source_link(data.cell(row_number, 13), fact.source_url)
     data.freeze_panes = "F5"
-    data.auto_filter.ref = f"A4:Q{max(HEADER_ROW, len(raw_facts) + HEADER_ROW)}"
-    for col in range(1, 18):
+    data.auto_filter.ref = f"A4:R{max(HEADER_ROW, len(raw_facts) + HEADER_ROW)}"
+    for col in range(1, 19):
         data.column_dimensions[get_column_letter(col)].width = {2: 52, 3: 52, 6: 25, 7: 25, 12: 72, 13: 82, 14: 45, 15: 34, 16: 25}.get(col, 20)
 
+    report("Adding filing coverage and missing-history notes…")
     sources = _base_sheet(workbook, "Sources & Coverage", bundle.company.name,
                           f"{len(periods)} annual period ends | {len(raw_facts)} raw facts | "
                           f"{len(bundle.filings)} discovered filings | {len(bundle.coverage)} extraction coverage records", 8)
@@ -297,6 +403,11 @@ def build_workbook(bundle: StatementBundle) -> bytes:
                         coverage.filed, coverage.status, coverage.detail, coverage.source_url])
     for warning in bundle.warnings:
         records.append(["Warning", "", "", "", "", "Notice", warning, ""])
+    for statement, omitted in omitted_periods.items():
+        for period in omitted:
+            records.append(["Unavailable period", "", "", period, "", "No selected values",
+                            f"{statement}: no selected statement values for this period. Empty edge columns are omitted from this statement view; filing discovery and raw facts remain available here and in Data Sheet.", ""])
+    _check_dimensions(len(records) + HEADER_ROW, 8, "Sources & Coverage")
     for row_number, record in enumerate(records, FIRST_DATA_ROW):
         _style_row(sources, row_number, 8)
         for col, value in enumerate(record, 1):
@@ -314,9 +425,9 @@ def build_workbook(bundle: StatementBundle) -> bytes:
     notes = [
         ("Company", bundle.company.name), ("Ticker", bundle.company.ticker), ("SEC CIK", bundle.company.cik),
         ("Generated (UTC)", bundle.generated_at),
-        ("Annual history", "All retrievable annual periods are included in chronological order. There is no 10-year or 50-year cap. Available data does not prove complete lifetime coverage."),
-        ("Presentation", "Annual columns and statement tabs follow the supplied reference workbook's broad layout. No Indian-company data, ratios, forecast columns or financial modeling are carried over."),
-        ("Units", "Pure currency amounts display in millions of their own reported currency. Shares, currency per share, ratios and all other units are unscaled. The Display unit column is authoritative. No currency conversion occurs."),
+        ("Annual history", "Every selected annual period is retained in chronological order, with no 10-year or 50-year cap. Statement views omit wholly empty leading and trailing years; internal gaps remain blank. Sources & Coverage lists omitted periods. Available data does not prove complete lifetime coverage."),
+        ("Presentation", "The main statements use annual columns, section headings and bold reported totals. Cash Flow presents reported cash reconciliation totals; Cash Flow Detail retains every selected company cash-flow line. No forecasts, valuations or synthetic totals are added."),
+        ("Units", "Pure currency amounts display in millions of their own reported currency. Shares, currency per share, ratios and all other units are unscaled. The statement note specifies a single reported currency; mixed currencies and other units are identified in row labels. Each cell comment records its exact reported and display unit. No currency conversion occurs."),
         ("Raw values", "Data Sheet stores every supplied raw fact and every selected statement fact, unscaled. Displayed cells identifies the statement cell using each selected fact."),
         ("Presentation signs", "Where the filing's visible statement sign is available, statement tabs use that presentation value. For example, an XBRL payments concept can be positive while its cash-flow line is shown negative. Data Sheet keeps the underlying Source/XBRL value and optional Statement presentation value separately, both unscaled."),
         ("Cash-flow reconciliation", "Beginning and ending cash can use the same original SEC concept with different instant dates. They remain separate reported rows, identified by cash_begin/cash_end row roles. Annual display period columns identify the verified year being reconciled; Original source instant preserves each actual XBRL context date. These display periods do not turn cash balances into duration facts."),
@@ -325,7 +436,8 @@ def build_workbook(bundle: StatementBundle) -> bytes:
         ("SEC companyfacts limits", "The SEC companyfacts API contains standardized entity-level XBRL facts, generally from the modern structured reporting era. It is not a complete statement presentation, omits company-specific custom tags and dimensions, and does not establish 50+ years of coverage."),
         ("Older filings", "Older or unsupported filings may have no extractable numerical facts. Sources & Coverage records discovered filings, supported extraction, unsupported formats and reported gaps. Missing years are not estimated."),
         ("Untagged row identifiers", "Identifiers beginning html: are locally generated from an untagged statement label. They are not SEC XBRL tags. Consult the source filing and extraction notes."),
-        ("Comparability", "Company labels and SEC tags are preserved where supplied. Tags may change or overlap across years; rows are not automatically combined. Different units remain separate. Fiscal periods may have different ends or lengths; inspect start and end dates."),
+        ("Comparability", "Company labels and SEC tags are preserved where supplied. Only explicitly recognized equivalent concepts share a historical row; their original labels and tags remain in each cell comment and Data Sheet. Other custom and ambiguous concepts remain separate. Different units remain separate. Fiscal periods may have different ends or lengths; inspect start and end dates."),
+        ("EPS and stock splits", "Earnings per share and share counts retain each selected filing’s reported basis. Older years are not uniformly adjusted for subsequent stock splits. Review split dates and source notes before comparing per-share history or using it in projections or ratios."),
         ("Analyst adjustments", "Figures remain as reported in the selected source. No normalization of one-time expenses, valuations, growth forecasts or analyst adjustments is performed."),
         ("Provenance", "Every displayed numeric statement value has a comment with SEC tag, raw unit/value, accession, filed date, period dates, extraction and selection reason. Valid SEC source URLs are clickable."),
         ("Link policy", "Only HTTPS links on sec.gov, www.sec.gov or data.sec.gov using SEC archive/XBRL/submissions paths become hyperlinks. Other source text remains literal and is not executable."),
@@ -342,6 +454,8 @@ def build_workbook(bundle: StatementBundle) -> bytes:
     readme.column_dimensions["B"].width = 120
     readme.freeze_panes = "B5"
 
+    report("Saving the Excel file…")
     output = BytesIO()
     workbook.save(output)
+    report("Excel file is ready.")
     return output.getvalue()

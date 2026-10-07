@@ -32,6 +32,7 @@ class FixtureHistorian:
 
     def generate(self, company: Company, progress=None) -> StatementBundle:
         if progress:
+            progress("Finding annual filings")
             progress("Reading offline fixture")
         source = "https://www.sec.gov/Archives/edgar/data/1/000000000125000001/fixture.htm"
         coverage = CoverageRecord("0000000001-25-000001", "2024-12-31", "2025-02-01", source, "fixture", "Offline test only")
@@ -91,10 +92,17 @@ def test_search_selection_generates_real_workbook_from_offline_fixture(ui_file, 
     with ZipFile(BytesIO(workbook)) as archive:
         assert "xl/workbook.xml" in archive.namelist()
     assert app.session_state["workbook_name"] == "FIX_Financial_History.xlsx"
-    assert [entry.value for entry in app.metric] == ["1", "2024-12-31", "2024-12-31"]
+    assert [entry.value for entry in app.metric] == ["1", "2024", "2024"]
+    assert [entry.label for entry in app.metric] == ["Periods with figures", "Earliest figures", "Latest figures"]
     assert len(app.get("download_button")) == 2
     assert app.dataframe
-    assert app.dataframe[0].value["2024-12-31"].iloc[0] == -1_200_000
+    preview = " ".join(element.proto.body for element in app.get("html"))
+    assert "<td>(1.2)</td>" in preview
+    assert "USD million" in preview
+    assert "2024-12-31" in preview
+    assert any(entry.value == "Your workbook is ready" for entry in app.subheader)
+    assert any(entry.label == "Retrieval details" and not entry.proto.expanded for entry in app.expander)
+    assert any("Building the Excel workbook" in line for line in app.session_state["retrieval_messages"])
 
 
 def test_failed_search_has_sanitized_error_and_diagnostics(ui_file, monkeypatch):
@@ -184,4 +192,61 @@ def test_new_search_clears_previously_prepared_company_workbook(ui_file, monkeyp
     assert "workbook" not in app.session_state
     assert "bundle" not in app.session_state
     assert "selected_company" not in app.session_state
+    assert "retrieval_messages" not in app.session_state
     assert len(app.get("download_button")) == 1
+
+
+def test_generation_failure_does_not_leave_a_partial_workbook(ui_file, monkeypatch):
+    monkeypatch.setenv("SEC_USER_AGENT", CONTACT)
+    def fail_after_progress(self, company, progress=None):
+        progress("Reading fixture")
+        raise ValueError(f"Fixture generation failure for {self.user_agent}")
+    monkeypatch.setattr(FixtureHistorian, "generate", fail_after_progress)
+    app = choose_fixture(AppTest.from_file(str(ui_file)).run())
+    button(app, "Prepare Excel download").click().run()
+    assert not app.exception
+    assert "workbook" not in app.session_state
+    assert "bundle" not in app.session_state
+    assert "retrieval_messages" not in app.session_state
+    assert any("Fixture generation failure" in entry.value for entry in app.error)
+    assert CONTACT not in " ".join(entry.value for entry in app.error)
+
+
+def test_coverage_exposes_years_without_values_instead_of_counting_them(ui_file, monkeypatch):
+    monkeypatch.setenv("SEC_USER_AGENT", CONTACT)
+    original_generate = FixtureHistorian.generate
+    def generate_with_gap(self, company, progress=None):
+        bundle = original_generate(self, company, progress)
+        bundle.periods.insert(0, "1994-12-31")
+        bundle.warnings = ["An older filing could not be extracted."]
+        return bundle
+    monkeypatch.setattr(FixtureHistorian, "generate", generate_with_gap)
+    app = choose_fixture(AppTest.from_file(str(ui_file)).run())
+    button(app, "Prepare Excel download").click().run()
+    assert not app.exception
+    assert app.metric[0].value == "1"
+    assert any("1 discovered annual period has no extracted figures" in entry.value for entry in app.info)
+    assert any(entry.label == "Coverage & notes" and not entry.proto.expanded for entry in app.expander)
+    assert any("1994-12-31" in entry.value for entry in app.markdown)
+    assert "aria-label='Unavailable'>—" in " ".join(element.proto.body for element in app.get("html"))
+
+
+def test_statement_preview_escapes_reported_labels(ui_file, monkeypatch):
+    monkeypatch.setenv("SEC_USER_AGENT", CONTACT)
+    original_generate = FixtureHistorian.generate
+    def generate_with_special_label(self, company, progress=None):
+        bundle = original_generate(self, company, progress)
+        row = bundle.statements["Cash Flow"][0]
+        row.label = "<script>alert('fixture')</script> & capital expenditures"
+        row.section = "Investing <activities>"
+        row.is_total = True
+        return bundle
+    monkeypatch.setattr(FixtureHistorian, "generate", generate_with_special_label)
+    app = choose_fixture(AppTest.from_file(str(ui_file)).run())
+    button(app, "Prepare Excel download").click().run()
+    assert not app.exception
+    preview = " ".join(element.proto.body for element in app.get("html"))
+    assert "<script>" not in preview
+    assert "&lt;script&gt;" in preview
+    assert "Investing &lt;activities&gt;" in preview
+    assert "statement-total" in preview

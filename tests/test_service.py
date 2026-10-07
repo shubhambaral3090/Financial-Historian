@@ -171,7 +171,8 @@ def test_failed_structured_data_still_extracts_filing_and_records_warning(monkey
         observation(filing, statement) for statement in STATEMENTS
     ])
     bundle = historian(client).generate(COMPANY)
-    assert bundle.coverage[0].status == "extracted"
+    assert bundle.coverage[0].status == "partial"
+    assert "Core rows not verified" in bundle.coverage[0].detail
     assert len(bundle.raw_facts) == 3
     assert any("Structured company-facts data could not be loaded" in w for w in bundle.warnings)
     assert dict(client.json_calls)[FACTS]["refresh"] is True
@@ -201,11 +202,12 @@ def test_structured_fallback_is_explicit_and_preserves_missing_statement_warning
     ])
     bundle = historian(client).generate(COMPANY)
     assert bundle.coverage[0].status == "structured fallback"
-    assert "No primary document" in bundle.coverage[0].detail
+    assert "Filing index checked" in bundle.coverage[0].detail
     assert "Balance Sheet" in bundle.coverage[0].detail
     assert "Cash Flow" in bundle.coverage[0].detail
     assert len(bundle.raw_facts) == 1
-    assert not client.document_calls
+    assert len(client.document_calls) == 1
+    assert client.document_calls[0][0].endswith("-index.html")
 
 
 def test_parser_failure_is_coverage_gap_and_next_filing_is_still_processed(monkeypatch, capture_assembly):
@@ -220,7 +222,60 @@ def test_parser_failure_is_coverage_gap_and_next_filing_is_still_processed(monke
 
     monkeypatch.setattr(service, "parse_filing_html", parse)
     bundle = historian(client).generate(COMPANY)
-    assert [item.status for item in bundle.coverage] == ["unsupported", "extracted"]
+    assert [item.status for item in bundle.coverage] == ["unsupported", "partial"]
     assert len(client.document_calls) == 2
     assert "interpreted safely" in bundle.coverage[0].detail
     assert len(bundle.raw_facts) == 3
+
+
+def test_complete_primary_statements_need_core_rows_and_balanced_totals(monkeypatch, capture_assembly):
+    record = filing_record(2023, 1)
+    client = FixtureClient({SUBMISSIONS: {"filings": {"recent": columnar([record])}}, FACTS: {}})
+    monkeypatch.setattr(service, "parse_company_facts", lambda *_: [])
+
+    def parse(_, filing):
+        totals = [
+            (STATEMENTS[0], "Revenues", 100), (STATEMENTS[0], "NetIncomeLoss", 10),
+            (STATEMENTS[1], "Assets", 60), (STATEMENTS[1], "Liabilities", 40),
+            (STATEMENTS[1], "StockholdersEquity", 20),
+            (STATEMENTS[2], "NetCashProvidedByUsedInOperatingActivities", 20),
+            (STATEMENTS[2], "NetCashProvidedByUsedInInvestingActivities", -10),
+            (STATEMENTS[2], "NetCashProvidedByUsedInFinancingActivities", -8),
+        ]
+        return [Fact("us-gaap:" + tag, tag, "USD", value,
+                     None if statement == STATEMENTS[1] else "2023-01-01", "2023-12-31",
+                     filing.accession, filing.filed, filing.form, filing.source_url,
+                     statement, "inline-xbrl") for statement, tag, value in totals]
+
+    monkeypatch.setattr(service, "parse_filing_html", parse)
+    bundle = historian(client).generate(COMPANY)
+    assert bundle.coverage[0].status == "extracted"
+    assert "Core statement checks passed" in bundle.coverage[0].detail
+
+
+def test_assembly_progress_precedes_assembly_work(monkeypatch):
+    record = filing_record(2023, 1)
+    client = FixtureClient({SUBMISSIONS: {"filings": {"recent": columnar([record])}}, FACTS: {}})
+    monkeypatch.setattr(service, "parse_company_facts", lambda *_: [])
+    monkeypatch.setattr(service, "parse_filing_html", lambda *_: [])
+    progress = []
+
+    def assemble(company, filings, facts, coverage, warnings):
+        assert progress[-1] == "Preparing statement rows and source records…"
+        return StatementBundle(company)
+
+    monkeypatch.setattr(service, "assemble_bundle", assemble)
+    historian(client).generate(COMPANY, progress.append)
+
+
+def test_unexpected_programming_failure_is_not_reported_as_unsupported_filing(monkeypatch):
+    record = filing_record(2023, 1)
+    client = FixtureClient({SUBMISSIONS: {"filings": {"recent": columnar([record])}}, FACTS: {}})
+    monkeypatch.setattr(service, "parse_company_facts", lambda *_: [])
+
+    def parse(*_):
+        raise TypeError("Unexpected programming failure")
+
+    monkeypatch.setattr(service, "parse_filing_html", parse)
+    with pytest.raises(TypeError, match="programming failure"):
+        historian(client).generate(COMPANY)

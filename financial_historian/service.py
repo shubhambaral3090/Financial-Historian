@@ -2,16 +2,111 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 import re
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urljoin, urlsplit
+
+from lxml import etree, html
 
 from .extract import assemble_bundle, parse_company_facts, parse_filing_html
 from .models import Company, CoverageRecord, Filing, STATEMENTS, StatementBundle
+from .quality import inspect_bundle, inspect_filing
 from .sec_client import SecAccessError, SecClient
 
 ANNUAL_FORMS = {"10-K", "10-K/A", "10-K405", "10-K405/A", "10-KT", "10-KT/A",
                 "20-F", "20-F/A", "40-F", "40-F/A"}
+
+
+def _archive_document_url(index_url: str, href: str, accession: str,
+                          *, complete_submission: bool = False) -> str | None:
+    """Accept files inside this accession, plus its listed complete submission.
+
+    Historical SEC indexes often link complete submissions one directory above
+    the accession folder. That one exact filename is allowed; arbitrary issuer
+    paths and links to other filings are never followed.
+    """
+    try:
+        target = urljoin(index_url, href)
+        parsed = urlsplit(target)
+        origin = urlsplit(index_url)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (parsed.scheme != "https" or parsed.hostname != "www.sec.gov"
+            or parsed.username or parsed.password or port not in {None, 443}
+            or parsed.query or parsed.fragment):
+        return None
+    path = unquote(parsed.path)
+    accession_dir = origin.path.rsplit("/", 1)[0] + "/"
+    # Reject encoded traversal and filenames that normalize to another path.
+    if "\\" in path or any(part in {".", ".."} for part in path.split("/")):
+        return None
+    filename = path.rsplit("/", 1)[-1]
+    within_accession = path.rsplit("/", 1)[0] + "/" == accession_dir
+    if complete_submission:
+        issuer_dir = accession_dir.rstrip("/").rsplit("/", 1)[0] + "/"
+        if filename != accession + ".txt" or path not in {
+            accession_dir + filename, issuer_dir + filename,
+        }:
+            return None
+    elif not within_accession or not filename or filename.endswith("-index.html"):
+        return None
+    return target
+
+
+def _index_documents(document: bytes, filing: Filing) -> tuple[list[str], list[str]]:
+    """Read the index's actual document type column, not descriptions or exhibits."""
+    try:
+        root = html.fromstring(document)
+    except etree.ParserError:
+        return [], []
+    primary = []
+    for table in root.xpath("//table"):
+        columns = None
+        for row in table.xpath("./tr | ./thead/tr | ./tbody/tr"):
+            cells = row.xpath("./th | ./td")
+            values = [" ".join(cell.itertext()).strip() for cell in cells]
+            normalized = [re.sub(r"\s+", " ", value).casefold() for value in values]
+            if "type" in normalized and "document" in normalized:
+                columns = {name: normalized.index(name) for name in ("type", "document")}
+                columns["seq"] = normalized.index("seq") if "seq" in normalized else 0
+                continue
+            if columns is None or len(cells) <= max(columns.values()):
+                continue
+            if values[columns["type"]].strip().upper() != filing.form.upper():
+                continue
+            sequence = values[columns["seq"]]
+            rank = int(sequence) if sequence.isdigit() else 999999
+            for href in cells[columns["document"]].xpath(".//a/@href"):
+                target = _archive_document_url(filing.source_url, href, filing.accession)
+                if target and target not in {url for _, url in primary}:
+                    primary.append((rank, target))
+    complete = []
+    for href in root.xpath("//a/@href"):
+        target = _archive_document_url(filing.source_url, href, filing.accession,
+                                       complete_submission=True)
+        if target and target not in complete:
+            complete.append(target)
+    return [url for _, url in sorted(primary, key=lambda item: item[0])], complete
+
+
+def _annual_submission_html(document: bytes, form: str) -> bytes | None:
+    """Extract only the exact annual form's HTML from an SGML submission."""
+    for match in re.finditer(rb"<DOCUMENT\s*>(.*?)</DOCUMENT\s*>", document, re.I | re.S):
+        block = match.group(1)
+        document_type = re.search(rb"<TYPE>\s*([^\r\n<]+)", block, re.I)
+        if document_type is None or document_type.group(1).strip().upper() != form.encode("ascii"):
+            continue
+        text = re.search(rb"<TEXT\s*>(.*?)</TEXT\s*>", block, re.I | re.S)
+        if text is not None and _is_html_statement_document(text.group(1)):
+            return text.group(1)
+    return None
+
+
+def _is_html_statement_document(document: bytes) -> bool:
+    # Old SGML <TABLE><S><C> ASCII tables are not HTML financial tables.
+    return bool(re.search(rb"<html\b|<tr\b[^>]*>\s*<t[dh]\b", document, re.I))
 
 
 class FinancialHistorian:
@@ -89,6 +184,44 @@ class FinancialHistorian:
         deduped = {f.accession: f for f in records}
         return sorted(deduped.values(), key=lambda f: (f.filed, f.accession))
 
+    def _filing_document(self, filing: Filing) -> tuple[Filing, bytes | None, str]:
+        if filing.primary_document:
+            return filing, self.client.get_bytes(filing.source_url, ttl=30 * 86400), ""
+        index = self.client.get_bytes(filing.source_url, ttl=30 * 86400)
+        annual_documents, complete_submissions = _index_documents(index, filing)
+        resolved = filing
+        notes = []
+        visited = set()
+        for url in annual_documents + complete_submissions:
+            if url in visited:
+                continue
+            visited.add(url)
+            filename = unquote(urlsplit(url).path.rsplit("/", 1)[-1])
+            candidate = replace(filing, primary_document=filename, source_url=url)
+            if resolved is filing:
+                resolved = candidate
+            if not filename.lower().endswith((".htm", ".html", ".txt")):
+                notes.append("The listed annual document uses an unsupported format; review its source link.")
+                continue
+            try:
+                document = self.client.get_bytes(url, ttl=30 * 86400)
+            except SecAccessError as exc:
+                notes.append(str(exc))
+                continue
+            if url in complete_submissions or re.search(rb"<DOCUMENT\s*>", document, re.I):
+                annual_html = _annual_submission_html(document, filing.form)
+                if annual_html is not None:
+                    return candidate, annual_html, "Annual HTML document located inside the SEC complete submission."
+                notes.append("Complete submission checked: no HTML document for this exact annual form was found. "
+                             "Older plain-text statements need manual extraction.")
+            elif filename.lower().endswith((".htm", ".html")) or _is_html_statement_document(document):
+                return candidate, document, "Primary annual document located through the SEC filing index."
+            else:
+                notes.append("Annual document located, but its older plain-text format is not supported for extraction.")
+        if not annual_documents and not complete_submissions:
+            notes.append("Filing index checked; no annual primary document or complete submission link could be located.")
+        return resolved, None, " ".join(dict.fromkeys(notes))
+
     def generate(self, company: Company, progress: Callable[[str], None] | None = None) -> StatementBundle:
         report = progress or (lambda _: None)
         report("Finding all available annual filings; no year limit…")
@@ -101,7 +234,8 @@ class FinancialHistorian:
             "EDGAR generally starts in the 1990s; older paper reports and predecessor identifiers may require manual research.",
             "Values use the latest available annual filing for each reported tag and period. "
             "Later comparative figures are not automatically proven restatements; changes are flagged for review.",
-            "Different tags and units are kept separate. Selected annual period starts are recorded in the sources. "
+            "Verified equivalent concepts may share a historical row; original tags remain in each cell's sources. "
+            "Different units and distinct reported scopes stay separate. Selected annual period starts are recorded in the sources. "
             "Blank cells mean unavailable observations, never zero. Fiscal-year and accounting changes require analyst review.",
         ]
         facts = []
@@ -119,27 +253,27 @@ class FinancialHistorian:
             report(f"Reading annual filing {index + 1} of {len(filings)} · {filing.report_date or filing.filed} · {filing.form}…")
             extracted = []
             problem = ""
-            if not filing.primary_document:
-                problem = "No primary document is supplied by the SEC index; review the filing manually."
-            else:
-                try:
-                    document = self.client.get_bytes(filing.source_url, ttl=30 * 86400)
+            try:
+                filing, document, problem = self._filing_document(filing)
+                filings[index] = filing
+                if document is not None:
                     extracted = parse_filing_html(document, filing)
                     facts.extend(extracted)
-                except SecAccessError as exc:
-                    problem = str(exc)
-                except (ValueError, TypeError) as exc:
-                    # Parsing anomalies get their own coverage record. Never turn them into zeroes.
-                    problem = "The filing's statement format could not be interpreted safely; review it manually."
+            except SecAccessError as exc:
+                problem = str(exc)
+            except ValueError:
+                # Known malformed document errors become explicit coverage gaps.
+                problem = "The filing's statement format could not be interpreted safely; review it manually."
             fallback = [f for f in facts if f.accession == filing.accession and f.extraction == "companyfacts"]
             found = {f.statement for f in extracted}
             fallback_found = {f.statement for f in fallback}
-            if found == set(STATEMENTS):
+            issues = inspect_filing(extracted, filing.report_date) if extracted else []
+            if found == set(STATEMENTS) and not issues:
                 status = "extracted"
-                detail = f"Tagged primary statement observations: {len(extracted)}."
+                detail = f"Primary statement observations: {len(extracted)}. Core statement checks passed."
             elif extracted:
                 status = "partial"
-                detail = f"Tagged statements: {', '.join(sorted(found))}. Other items may use standard SEC facts."
+                detail = f"Reported statements: {', '.join(sorted(found))}. Other items may use standard SEC facts."
             elif fallback:
                 status = "structured fallback"
                 detail = (f"Standard company-facts observations: {len(fallback)}; "
@@ -149,13 +283,17 @@ class FinancialHistorian:
                 detail = "No trustworthy annual statement values could be extracted; manual review needed."
             if problem:
                 detail += " " + problem
+            if issues:
+                detail += " " + " ".join(issues)
             available = found | fallback_found
             if available != set(STATEMENTS):
                 missing = set(STATEMENTS) - available
                 detail += f" Missing statements: {', '.join(sorted(missing))}."
             coverage.append(CoverageRecord(filing.accession, filing.report_date, filing.filed,
                                            filing.source_url, status, detail))
+        report("Preparing statement rows and source records…")
         bundle = assemble_bundle(company, filings, facts, coverage, warnings)
+        bundle.warnings = list(dict.fromkeys(bundle.warnings + inspect_bundle(bundle)))
         missing = sum(c.status in {"unsupported", "partial", "structured fallback"} for c in coverage)
         if missing:
             bundle.warnings.append(f"{missing} of {len(filings)} filings have limited extraction. "
@@ -163,5 +301,4 @@ class FinancialHistorian:
         if not bundle.raw_facts:
             # A coverage-only workbook is useful, but make its lack of values explicit.
             bundle.warnings.append("No financial values were extracted. This workbook contains filing links and coverage only.")
-        report("Preparing statement rows and source records…")
         return bundle
