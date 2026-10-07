@@ -1,0 +1,20 @@
+FINANCIAL HISTORIAN — WINDOWS 11
+
+1. Extract the ZIP into a folder (do not launch from inside the ZIP).
+2. Install Python 3.12 from https://www.python.org/downloads/windows/
+   Select "Add Python to PATH" or install the Python launcher.
+3. Double-click launch_windows.cmd. First-time installation needs internet.
+4. In the browser, enter your name and contact email for SEC access.
+   The app remembers these locally. No account, API key or subscription is needed.
+5. Search for a company, click its result, prepare the workbook, then download it.
+
+Keep the launcher's window open while using the app. Ctrl+C stops it.
+Closing the browser does not stop the local server; close the launcher to stop it.
+
+There is no fixed year limit. All discoverable annual SEC filings are attempted.
+This is an initial version: it cannot guarantee every statement line or 50+ years.
+Older paper reports, non-SEC archives and unsupported formats need manual review.
+Always read Sources & Coverage in the workbook before using figures in a model.
+
+If there is a problem, download the diagnostic log in the app's sidebar.
+More detail is in README.md. Your local settings and logs are not in this ZIP.
