@@ -6,4 +6,6 @@ data/
 logs/
 exports/
 .streamlit/secrets.toml
+.env
+.env.*
 *.zip

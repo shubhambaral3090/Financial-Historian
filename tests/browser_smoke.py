@@ -88,9 +88,18 @@ def run(chromium: str, output: Path, rich: bool = False) -> dict:
                 page.get_by_role("button", name="Search companies", exact=True).click()
                 page.get_by_role("button", name="Fictional UI Fixture · FIX", exact=True).click()
                 download_button = page.get_by_role("button", name="Download Excel workbook", exact=True)
-                expect(download_button).to_be_visible(timeout=20000)
+                try:
+                    expect(download_button).to_be_visible(timeout=20000)
+                except AssertionError:
+                    # Only this isolated fictional fixture is photographed;
+                    # the SEC identity is never loaded from the environment.
+                    page.screenshot(path=str(output / f"{name}-load-failure.png"),full_page=True)
+                    print("Fixture browser error types:", [e.splitlines()[0][:200] for e in errors])
+                    raise
                 expect(page.get_by_text("Research page ready",exact=True)).to_be_visible(timeout=20000)
                 expect(page.get_by_test_id("stApp")).to_have_attribute("data-test-script-state","notRunning",timeout=20000)
+                expect(page.get_by_text("Statements retrieved. Preparing the matching analysis and Excel workbook…",exact=True)).to_have_count(0)
+                expect(page.locator('.statement-preview[aria-label="Cash Flow annual history"]')).to_have_count(1)
                 page.get_by_role("tab", name="Statements", exact=True).click()
                 expect(page.get_by_test_id("stApp")).to_have_attribute("data-test-script-state","notRunning",timeout=20000)
                 page.get_by_role("tab", name="Cash flow", exact=True).click()

@@ -14,9 +14,11 @@ from datetime import datetime, timezone
 import pickle
 from queue import Empty, Queue
 from threading import Lock
+from time import perf_counter
 from typing import Callable
 
 from .export import build_workbook
+from .analysis import Analysis, build_analysis
 from .market import MarketDataProvider, Quote
 from .models import Company, StatementBundle
 from .presentation import prepare_presentation
@@ -33,6 +35,8 @@ class ResearchEvent:
     workbook: bytes | None = None
     sec_retrieved_at: str = ""
     workbook_generated_at: str = ""
+    duration_seconds: float | None = None
+    analysis: Analysis | None = None
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,7 @@ class ResearchResult:
     sec_error: str = ""
     workbook_error: str = ""
     sec_stale: bool = False
+    analysis: Analysis | None = None
 
 
 @dataclass(frozen=True)
@@ -75,10 +80,11 @@ class ResearchController:
     """
 
     def __init__(self, *, max_entries: int = 8, max_bytes: int = 64 * 1024 * 1024,
-                 retention_seconds: float = 24 * 3600, clock=None, exporter=None):
+                 retention_seconds: float = 24 * 3600, freshness_seconds: float = 300, clock=None, exporter=None):
         self.max_entries = max(1, max_entries)
         self.max_bytes = max(1, max_bytes)
         self.retention_seconds = max(0, retention_seconds)
+        self.freshness_seconds = max(0, freshness_seconds)
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.exporter = exporter or build_workbook
         self._snapshots: OrderedDict[str, _FinancialSnapshot] = OrderedDict()
@@ -105,7 +111,7 @@ class ResearchController:
         if result.bundle is None or result.workbook is None:
             return
         # These bytes are generated here, never accepted from a user or disk.
-        snapshot = _FinancialSnapshot(result.company, pickle.dumps(result.bundle), result.workbook,
+        snapshot = _FinancialSnapshot(result.company, pickle.dumps((result.bundle, result.analysis)), result.workbook,
                                       result.sec_retrieved_at, result.workbook_generated_at,
                                       self.clock().timestamp(), generation)
         if snapshot.size > self.max_bytes:
@@ -122,11 +128,11 @@ class ResearchController:
 
     @staticmethod
     def _from_snapshot(snapshot: _FinancialSnapshot, *, stale: bool = False) -> ResearchResult:
-        bundle = pickle.loads(snapshot.bundle)
+        bundle, analysis = pickle.loads(snapshot.bundle)
         return ResearchResult(snapshot.company, bundle=bundle, workbook=snapshot.workbook,
                               sec_retrieved_at=snapshot.retrieved_at,
                               workbook_generated_at=snapshot.workbook_generated_at,
-                              warnings=tuple(bundle.warnings), sec_stale=stale)
+                              warnings=tuple(bundle.warnings), sec_stale=stale, analysis=analysis)
 
     def load(self, service: FinancialHistorian, company: Company, market: MarketDataProvider,
              *, force_refresh: bool = True,
@@ -149,27 +155,40 @@ class ResearchController:
         def progress(message: str) -> None:
             events.put(ResearchEvent("progress", message))
 
+        def timing(stage, started):
+            events.put(ResearchEvent("timing", stage, duration_seconds=perf_counter()-started))
+
+        def failure(stage, error):
+            # Only a built-in exception class name, never its message/headers.
+            name = type(error).__name__ if type(error).__module__ == "builtins" else "ProviderError"
+            events.put(ResearchEvent("diagnostic", stage + ":" + name))
+
         def financial_work() -> ResearchResult:
-            if not force_refresh and previous is not None:
+            if (not force_refresh and previous is not None
+                    and self.clock().timestamp()-previous.stored_at < self.freshness_seconds):
                 cached = self._from_snapshot(previous)
                 events.put(ResearchEvent("company", company=cached.company))
                 events.put(ResearchEvent("financial", "Using cached SEC financial statements",
                                          bundle=cached.bundle, sec_retrieved_at=cached.sec_retrieved_at))
                 events.put(ResearchEvent("workbook", workbook=cached.workbook,
-                                         workbook_generated_at=cached.workbook_generated_at))
+                                         workbook_generated_at=cached.workbook_generated_at, analysis=cached.analysis))
                 return cached
             resolved = company
             fallback = previous
             try:
                 progress("Loading company profile")
+                started = perf_counter()
                 resolved = service.resolve_company(company)
+                timing("company_profile", started)
                 # Tickers can be reassigned. A newly verified issuer must not
                 # inherit an old issuer's cached financial statements.
                 if fallback is not None and resolved.cik != fallback.company.cik:
                     fallback = None
                 events.put(ResearchEvent("company", company=resolved))
                 progress("Retrieving SEC filings")
+                started = perf_counter()
                 bundle = prepare_presentation(limit_statement_history(service.generate(resolved, progress=progress), 20))
+                timing("sec_retrieval_and_parsing", started)
                 has_values = any(row.values for rows in bundle.statements.values() for row in rows)
                 provider_failed = any(warning.startswith((
                     "Structured company-facts data could not be loaded:",
@@ -180,7 +199,8 @@ class ResearchController:
                         raise RuntimeError("Failed refresh contains no financial observations")
                 retrieved_at = self.clock().isoformat()
                 bundle = replace(bundle, generated_at=retrieved_at)
-            except Exception:
+            except Exception as error:
+                failure("sec", error)
                 message = ("SEC financial information could not be refreshed. "
                            "Market information remains available; refresh the browser to check again.")
                 if fallback is not None:
@@ -190,7 +210,7 @@ class ResearchController:
                     events.put(ResearchEvent("financial", warning, bundle=stale.bundle,
                                              sec_retrieved_at=stale.sec_retrieved_at))
                     events.put(ResearchEvent("workbook", workbook=stale.workbook,
-                                             workbook_generated_at=stale.workbook_generated_at))
+                                             workbook_generated_at=stale.workbook_generated_at, analysis=stale.analysis))
                     return replace(stale, sec_error=message, warnings=stale.warnings + (warning,))
                 return ResearchResult(resolved, sec_error=message)
             events.put(ResearchEvent("financial", "Preparing financial statements", bundle=bundle,
@@ -198,12 +218,20 @@ class ResearchController:
             partial = ResearchResult(resolved, bundle=bundle, sec_retrieved_at=retrieved_at,
                                      warnings=tuple(bundle.warnings))
             try:
+                started = perf_counter()
+                analysis = build_analysis(bundle)
+                partial = replace(partial, analysis=analysis)
+                timing("analysis", started)
                 progress("Building Excel workbook")
-                workbook = self.exporter(bundle, progress=progress)
+                started = perf_counter()
+                workbook = (self.exporter(bundle, progress=progress, analysis=analysis)
+                            if self.exporter is build_workbook else self.exporter(bundle, progress=progress))
                 if not isinstance(workbook, bytes) or not workbook:
                     raise ValueError("Empty export")
                 generated_at = self.clock().isoformat()
-            except Exception:
+                timing("excel", started)
+            except Exception as error:
+                failure("workbook", error)
                 # Never attach an older workbook to newly retrieved statements.
                 return replace(partial, workbook_error="The Excel workbook could not be built. "
                                "The financial statements remain available; refresh the browser to check again.")
@@ -213,22 +241,26 @@ class ResearchController:
             # filing formats/coverage limitations alone are not network errors.
             if not provider_failed:
                 self._store(completed, generation)
-            events.put(ResearchEvent("workbook", workbook=workbook, workbook_generated_at=generated_at))
+            events.put(ResearchEvent("workbook", workbook=workbook, workbook_generated_at=generated_at, analysis=analysis))
             return completed
 
         def market_work(ticker: str) -> tuple[Quote | None, str]:
             progress("Loading market data")
+            started = perf_counter()
             try:
                 quote = market.quote(normalize_ticker(ticker), force_refresh=force_refresh)
                 error = ("Yahoo Finance market data is unavailable. SEC financial information is independent; "
                          "refresh the browser to check again.") if quote.price is None else ""
                 events.put(ResearchEvent("market", quote=quote, message=error))
                 return quote, error
-            except Exception:
+            except Exception as error:
+                failure("market", error)
                 error = ("Yahoo Finance market data is unavailable. SEC financial information is independent; "
                          "refresh the browser to check again.")
                 events.put(ResearchEvent("market", message=error))
                 return None, error
+            finally:
+                timing("market", started)
 
         # No contact/client references are retained after this call completes.
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="financial-research") as executor:

@@ -4,7 +4,7 @@ import math
 
 from .models import Fact, Filing
 from .extract import (_local, _text, _attr, _units, _number, _fact_text,
-                      _row_label, _annual_duration, _valid_end, _date)
+                      _row_label, _annual_duration, _valid_end, _date, ANNUAL_FORMS)
 
 # Exact concepts only; long-term debt is not total company debt.
 NOTE_TAGS = {
@@ -23,6 +23,7 @@ NOTE_TAGS = {
     "CommonStockholdersEquity": "Equity & Shares",
     "NetIncomeLossAvailableToCommonStockholdersBasic": "Equity & Shares",
     "InterestExpense": "Debt & Liquidity", "InterestExpenseNonOperating": "Debt & Liquidity",
+    "InterestExpenseNonoperating": "Debt & Liquidity",
     "ProfitLoss": "EBITDA & Capital",
     "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest": "EBITDA & Capital",
     "IncomeTaxExpenseBenefit": "EBITDA & Capital",
@@ -45,7 +46,7 @@ def parse_company_disclosures(payload: dict, filings: list[Filing]) -> list[Fact
         for unit,observations in concept.get("units",{}).items():
             for obs in observations:
                 filing = filing_map.get(obs.get("accn"))
-                if not filing or obs.get("form") not in {"10-K","10-K/A","20-F","20-F/A","40-F","40-F/A"}:
+                if not filing or obs.get("form") not in ANNUAL_FORMS:
                     continue
                 start,end = obs.get("start"),obs.get("end","")
                 if not _valid_end(end,filing) or not _date(obs.get("filed")):
@@ -63,7 +64,7 @@ def parse_company_disclosures(payload: dict, filings: list[Filing]) -> list[Fact
 
 
 def parse_disclosures(content: bytes, filing: Filing, kpi_mappings=()) -> list[Fact]:
-    if filing.form not in {"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"}:
+    if filing.form not in ANNUAL_FORMS:
         return []
     try:
         root = html.fromstring(content)

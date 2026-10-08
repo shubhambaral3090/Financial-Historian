@@ -100,6 +100,8 @@ def test_independent_hand_calculated_metrics(key,expected):
 def test_incompatible_or_invalid_inputs_remain_explained_blanks(tag,change,key,reason):
     bundle = metric_fixture()
     mutate(bundle,tag,**change)
+    if "accession" in change:
+        bundle.raw_facts = [f for f in bundle.raw_facts if not (f.tag.endswith(":"+tag) and f.end=="2024-12-31")]
     item = cell(build_analysis(bundle),key)
     assert item.value is None
     assert reason.lower() in item.reason.lower()

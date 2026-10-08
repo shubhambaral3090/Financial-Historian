@@ -110,6 +110,10 @@ def mutate(bundle,tag,**changes):
 def test_invalid_denominator_currency_and_vintage(change,reason):
     bundle=historical_fixture()
     mutate(bundle,"LiabilitiesCurrent",**change)
+    if "accession" in change:
+        # Without an unchanged common-filing observation, the vintage mismatch
+        # must still block calculation. Such evidence is tested separately.
+        bundle.raw_facts = [f for f in bundle.raw_facts if not (f.tag.endswith(":LiabilitiesCurrent") and f.end=="2024-12-31")]
     item=cell(build_analysis(bundle),"current_ratio")
     assert item.value is None
     assert reason in item.reason

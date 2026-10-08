@@ -1,4 +1,4 @@
-FISHTORIAN v0.6 — BROWSER WEB APP
+FISHTORIAN v0.7 — BROWSER WEB APP
 
 1. Extract All from the ZIP into a folder you can write to.
    Keep all files together; do not launch inside the ZIP.

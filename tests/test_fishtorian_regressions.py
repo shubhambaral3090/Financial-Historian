@@ -27,16 +27,16 @@ def test_wmt_export_revenue_scopes_keep_total_and_net_sales_without_custom_dupli
     assert len(bundle.raw_facts)==4
 
 
-def test_wmt_empty_april_metadata_date_does_not_displace_january_annual_history():
+def test_unsupported_metadata_date_without_same_filing_evidence_remains_visible():
     f=Fact("us-gaap:Revenues","Revenue","USD",1,"2008-02-01","2009-01-31","a","2010-03-01","10-K",SOURCE,"Profit & Loss")
     records=[replace(f,start=f"{y-1}-02-01",end=f"{y}-01-31") for y in range(2006,2027)]
     filings=[Filing("odd","10-K","2009-04-01","2009-04-01","annual.htm",SOURCE)]
     coverage=[CoverageRecord("odd","2009-04-01","2009-04-01",SOURCE,"unsupported","No trustworthy annual values")]
     result=limit_statement_history(assemble_bundle(Company("1","Fixture"),filings,records,coverage,[]))
     assert len(result.periods)==20
-    assert "2009-04-01" not in result.periods
-    assert "2007-01-31" in result.periods
-    assert any("Heuristic exclusion" in w for w in result.warnings)
+    assert "2009-04-01" in result.periods
+    assert "2007-01-31" not in result.periods
+    assert not any("Heuristic exclusion" in w for w in result.warnings)
     assert result.coverage==coverage
 
 

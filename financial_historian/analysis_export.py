@@ -116,6 +116,33 @@ def append_analysis(workbook, bundle, analysis: Analysis) -> dict:
     matrix("Return Bridge",[r for r in analysis.rows if r.definition.group=="Return bridge"])
     matrix("Common Size",analysis.common_size)
     matrix("Business Drivers",[r for r in analysis.rows if r.definition.group=="Business drivers"])
+    from .review import filing_changes
+    for title, records, note in (
+        ("Per-share Basis", analysis.basis_reviews,
+         "As-reported EPS/shares are not uniformly split-adjusted. Review changed representations before comparing columns."),
+        ("Filing Changes", filing_changes(bundle),
+         "Earlier and selected representations, unscaled reported units. A difference is not a certified restatement."),
+    ):
+        headers = list(records[0]) if records else ["Review"]
+        sheet = _base_sheet(workbook, title, company, note, len(headers))
+        _headers(sheet, headers)
+        if not records:
+            _write_text(sheet.cell(5,1), "No changes identified from the retrieved evidence. This is not proof of a uniform historical basis.")
+        for index, record in enumerate(records,5):
+            _style_row(sheet,index,len(headers))
+            for column, header in enumerate(headers,1):
+                value = record[header]
+                cell = sheet.cell(index,column)
+                if isinstance(value,(int,float)):
+                    cell.value = value
+                    cell.number_format = '#,##0.##########'
+                elif header.endswith("source"):
+                    _source_link(cell,value)
+                else:
+                    _write_text(cell,value)
+        for column,header in enumerate(headers,1):
+            sheet.column_dimensions[get_column_letter(column)].width = 65 if header in {"Explanation","Measure"} or header.endswith("source") else 23
+        sheet.freeze_panes = "D5"
     inputs.freeze_panes = "E5"
     inputs.auto_filter.ref = f"A4:O{max(4,next_row-1)}"
     for col in range(1,16):

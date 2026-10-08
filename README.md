@@ -5,16 +5,30 @@ to automatically load Yahoo market context, SEC annual statements, supporting
 schedules, historical calculations, explanations and a matching Excel workbook.
 Then choose **Download Excel workbook**.
 
-Version 0.6 presents up to **20 fiscal periods**, with 52 defined historical
+Version 0.7 presents up to **20 fiscal periods**, with 54 defined historical
 measures plus supported business-driver calculations. This is a research starting
 point, not a certified database, valuation model, or investment recommendation.
 Institutional acceptance remains pending independent live-filing verification.
-See [release evidence](docs/RELEASE_v0.6.md), [metric specification](docs/SPEC_v0.6.md),
+See [release evidence](docs/RELEASE_v0.7.md), [repair specification](docs/SPEC_v0.7.md),
 [research methodology](docs/METHODOLOGY.md), and the
 [fictional example workbook](docs/examples/Fishtorian_Example.xlsx).
 
 The Fishtorian wordmark is surrounded by two opposing Pisces-inspired fish.
 The GitHub repository and internal Python package keep their existing names.
+
+The v0.7 repair addresses false same-filing conflicts, conventional HTML fiscal
+dates, duplicate receivable rows, compatible unchanged filing representations,
+interest tag/sign handling and current marketable securities. Parent-based ROA
+and ROE are separate from consolidated/common returns. A metric definition does
+not guarantee available inputs for a particular company. The live overview now
+reports available measures; the two uploaded issuer exports are replayed in the
+release evidence, with remaining gaps explicitly listed.
+
+**EPS and shares remain as reported, not uniformly split-adjusted.** Visible
+warnings and **Per-share Basis** show incompatible selected representations.
+Growth uses the latest available filing containing both comparison years, with
+the actual inputs disclosed. **Filing Changes** compares earlier and selected
+amounts without calling every difference a restatement.
 
 ## Start the web app on Windows 11
 
@@ -154,9 +168,9 @@ conflicting same-period filing vintages and unsuitable denominators can make a
 metric unavailable. The reason appears online and in the workbook cell comment.
 
 Total revenue, net sales and customer-contract revenue remain distinct. Growth
-requires a consistent basis. A wholly unsupported metadata date less than 120 days
-from an observed annual end is excluded by an explicitly documented heuristic;
-coverage keeps the original record. Genuine missing annual years remain visible.
+requires a consistent basis. Unsupported short/transition periods remain visible.
+A filing-day metadata date is excluded only when observations from the same
+accession establish a different report end; coverage retains the original record.
 
 Annual inline note support includes curated PP&E, interest, common equity/income,
 debt/maturity concepts, and explicitly dimensional business-segment, product and
@@ -182,11 +196,20 @@ problems, not every defect. Review coverage and filings before preparing a model
 ## Automatic refresh, caches and contact privacy
 
 Company selection starts one workflow with independent Yahoo and SEC loading.
-Progress reports statement retrieval and workbook preparation; a ready workbook can download even while
-market loading continues. Ordinary widget reruns/downloads do not regenerate the
-page. Browser refresh restores non-secret selected CIK/ticker URL parameters and
+Statements appear while analysis and Excel generation continue. The final page
+and workbook reuse one calculation graph. Research widgets rerun within their
+own browser view; statement HTML uses a bounded rendering cache. Browser refresh
+restores non-secret selected CIK/ticker URL parameters and
 checks providers again. Last-good fallback has its original timestamps and a
 warning; a new dataset never receives a mismatched older workbook.
+
+Selection can reuse a successful research result for five minutes; a full browser
+reload rechecks providers. Public parsed filings use a JSON cache keyed by content,
+accession, parser version and KPI configuration (64 MiB maximum, seven-day TTL).
+It supplements the bounded raw-response cache; it is not a permanent archive.
+Diagnostics include stage durations and sanitized exception classes, never contact
+details or provider exception messages. Download timestamps retain their meaning
+when a result is reused.
 
 Contact stays in this tab's `sessionStorage` and server-session memory. It is sent
 only in SEC request headers, not to Yahoo, URLs, logs, diagnostics or Excel. It is
@@ -219,8 +242,8 @@ bash scripts/setup_cloud.sh
 The setup script installs development dependencies, checks them and runs the
 offline suite. On Windows, use `.venv\Scripts\python.exe -m pytest -q` after
 installing `requirements-dev.txt`; the launcher installs runtime packages only.
-See [the metric specification](docs/SPEC_v0.6.md) and
-[release validation evidence](docs/RELEASE_v0.6.md) for tested versus blocked capabilities.
+See [the repair specification](docs/SPEC_v0.7.md) and
+[release validation evidence](docs/RELEASE_v0.7.md) for tested versus blocked capabilities.
 
 Network hosts include `www.sec.gov`, `data.sec.gov`, PyPI package hosts,
 `query1.finance.yahoo.com`, `query2.finance.yahoo.com`, `fc.yahoo.com`,

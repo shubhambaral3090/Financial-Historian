@@ -24,12 +24,17 @@ Do not add forecasts, valuations, analyst adjustments or investment conclusions.
 Documented historical calculations belong in the separate analysis dependency
 graph, not in reported statements. Browser and Excel must use that same graph.
 Missing or incompatible inputs produce explained blanks. Do not call this release
-institutional grade before independent live-filing acceptance in docs/RELEASE_v0.6.md.
+institutional grade before independent live-filing acceptance in docs/RELEASE_v0.7.md.
 Keep the v0.6 ROIC proxy explicitly labelled; do not imply actual operating tax
 allocation, inferred excess cash, or Morningstar replication. EBITDA requires its
 pretax reconciliation. Per-share/segment growth requires same-filing comparisons.
 Operating KPI mappings require exact issuer/tag/unit/period evidence; the default
 registry is empty. Do not manufacture mappings or substitute loosely named facts.
+Keep parent-return alternatives separate from consolidated/common-return measures.
+Treat empty display overrides as the source value when testing fact equality.
+Cross-vintage compatibility needs actual unchanged common-filing observations;
+never disable the guard wholesale. Per-share growth can use the latest filing
+containing both years; expose its actual basis separately from reported columns.
 
 SEC networking needs a real contact entered in the tab session or through
 SEC_USER_AGENT. Never print it, hardcode an identity, disable TLS verification,

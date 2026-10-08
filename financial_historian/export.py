@@ -364,7 +364,7 @@ def _check_dimensions(rows: int, columns: int, sheet_name: str) -> None:
                          f"{MAX_COLUMNS:,}-column limit. No data was silently dropped.")
 
 
-def build_workbook(bundle: StatementBundle, progress: Callable[[str], None] | None = None) -> bytes:
+def build_workbook(bundle: StatementBundle, progress: Callable[[str], None] | None = None, *, analysis=None) -> bytes:
     """Return an XLSX with reported statement rows and cell-level provenance.
 
     Periods are chronological and must already have the application's 20-period
@@ -543,7 +543,7 @@ def build_workbook(bundle: StatementBundle, progress: Callable[[str], None] | No
     report("Building historical schedules and auditable calculations…")
     from .analysis import build_analysis
     from .analysis_export import append_analysis, cache_formula_results
-    cache = append_analysis(workbook, bundle, build_analysis(bundle))
+    cache = append_analysis(workbook, bundle, analysis if analysis is not None else build_analysis(bundle))
     report("Saving the Excel file…")
     output = BytesIO()
     workbook.save(output)

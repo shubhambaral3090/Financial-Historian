@@ -90,7 +90,7 @@ def test_tls_verification_keeps_requests_default_and_identifying_header(client, 
     assert calls[0][1].get("verify", True) is True
     assert calls[0][1]["allow_redirects"] is False
     assert calls[0][1]["timeout"] == (15, 60)
-    assert "FinancialHistorian" in client.session.headers["User-Agent"]
+    assert client.session.headers["User-Agent"].startswith("Fishtorian/")
 
 
 def test_pacing_applies_across_separate_clients(tmp_path, clock):

@@ -33,9 +33,14 @@ def limit_statement_history(bundle: StatementBundle, years: int = 20) -> Stateme
     discovered.update(period for rows in bundle.statements.values() for row in rows for period in row.values)
     observed_ends = {p for rows in bundle.statements.values() for row in rows for p in row.values}
     unsupported = {c.report_date for c in bundle.coverage if c.status == "unsupported"}
-    excluded = {p for p in discovered - observed_ends if p in unsupported and _valid_period(p)
-                and any(0 < abs((date.fromisoformat(p) - date.fromisoformat(o)).days) < 120
-                        for o in observed_ends if _valid_period(o))}
+    # An unsupported short/transition period remains a real coverage gap.
+    # Only omit a metadata date that equals the filing day when observations
+    # from that same accession establish a different report end.
+    excluded = {f.report_date for f in bundle.filings
+                if f.report_date in discovered - observed_ends and f.report_date in unsupported
+                and f.report_date == f.filed and f.form not in {"10-KT", "10-KT/A"}
+                and any(x.accession == f.accession and x.end != f.report_date
+                        and x.end in observed_ends for x in bundle.raw_facts)}
     discovered -= excluded
     available = sorted(discovered, reverse=True)
     keep = set(available[:years])
@@ -50,8 +55,8 @@ def limit_statement_history(bundle: StatementBundle, years: int = 20) -> Stateme
                                            "No verified statement observations are available for fiscal period"))]
     warnings.append(f"Statement presentation is limited to the latest {years} fiscal periods; raw source records and filing coverage remain available for audit.")
     if excluded:
-        warnings.append("Unsupported metadata dates within 120 days of an observed annual end were excluded from annual columns: "
-                        + ", ".join(sorted(excluded)) + ". Heuristic exclusion; original filing coverage remains available.")
+        warnings.append("Filing-day metadata dates contradicted by same-accession reported observations were excluded from annual columns: "
+                        + ", ".join(sorted(excluded)) + ". Original metadata and filing coverage remain available.")
     observed = {period for rows in statements.values() for row in rows for period in row.values}
     empty = sorted(keep - observed, reverse=True)
     if empty:
@@ -382,6 +387,9 @@ class FinancialHistorian:
         coverage = []
         read_count = 0
         retrieval_failed = False
+        from .parsed_cache import ParsedFilingCache
+        cache_dir = getattr(self.client, "cache_dir", None)
+        parsed_cache = ParsedFilingCache(Path(cache_dir) / "parsed") if cache_dir else None
         for index, filing in enumerate(filings):
             if filing.report_date not in selected_periods:
                 has_period = _valid_period(filing.report_date)
@@ -403,10 +411,18 @@ class FinancialHistorian:
                     retrieval_failed = True
                 filings[index] = filing
                 if document is not None:
-                    extracted = parse_filing_html(document, filing)
+                    cache_key = parsed_cache.key(document, filing, kpi_mappings) if parsed_cache else None
+                    cached = parsed_cache.get(cache_key) if parsed_cache else None
+                    if cached is None:
+                        extracted = parse_filing_html(document, filing)
+                        from .disclosures import parse_disclosures
+                        notes = parse_disclosures(document, filing, kpi_mappings)
+                        if parsed_cache:
+                            parsed_cache.put(cache_key, extracted, notes)
+                    else:
+                        extracted, notes = cached
                     facts.extend(extracted)
-                    from .disclosures import parse_disclosures
-                    disclosures.extend(parse_disclosures(document, filing, kpi_mappings))
+                    disclosures.extend(notes)
             except SecAccessError as exc:
                 problem = str(exc)
                 retrieval_failed = True

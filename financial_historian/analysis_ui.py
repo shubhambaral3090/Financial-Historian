@@ -51,14 +51,24 @@ def explain(row, periods):
     st.caption(d.reference)
 
 
-def render_analytics(bundle, render_statements):
-    analysis = build_analysis(bundle)
+@st.fragment
+def render_analytics(bundle, render_statements, analysis=None):
+    analysis = analysis if analysis is not None else build_analysis(bundle)
+    if analysis.basis_reviews:
+        st.warning("EPS and share counts use different reported bases in parts of this history. Do not calculate growth directly across those columns. Review Per-share Basis below; same-filing growth uses matching comparatives.")
+        with st.expander("Per-share basis review"):
+            st.dataframe(analysis.basis_reviews,hide_index=True,width="stretch",
+                         column_config={k:st.column_config.LinkColumn(k,display_text="Open filing") for k in ("Selected source","Selected current source","Comparison source")})
     overview,statements,schedules,metrics,sources = st.tabs(
         ["Overview","Statements","Schedules","Metrics & learning","Sources & checks"],
         key="research_tabs", on_change="rerun")
     with overview:
         st.subheader("Understand the history")
         st.write("Explore what the company reported, how the figures relate, and where the evidence comes from.")
+        defined = [r for r in analysis.rows if not r.definition.key.startswith("business:")]
+        if analysis.periods:
+            available = sum(r.cells[analysis.periods[-1]].value is not None for r in defined)
+            st.caption(f"Latest period: {available} of {len(defined)} defined measures have compatible inputs. Availability is not an accuracy score; inspect the sources and checks.")
         if not analysis.periods:
             st.info("No annual periods are available for historical analysis.")
         else:
@@ -136,6 +146,11 @@ def render_analytics(bundle, render_statements):
                        "Explanation":c.reason} for c in analysis.checks],hide_index=True,width="stretch")
         for note in analysis.notes:
             st.write(note)
+        with st.expander("Changed filed representations"):
+            from .review import filing_changes
+            st.caption("Compare original and later amounts. Differences are not automatically certified restatements; units are unscaled as reported.")
+            st.dataframe(filing_changes(bundle),hide_index=True,width="stretch",
+                         column_config={k:st.column_config.LinkColumn(k,display_text="Open filing") for k in ("Earlier source","Selected source")})
         if bundle.coverage:
             st.dataframe([{"Period":c.report_date,"Status":c.status,"Explanation":c.detail,
                            "Filing":c.source_url if _safe_source_url(c.source_url) else ""} for c in bundle.coverage],

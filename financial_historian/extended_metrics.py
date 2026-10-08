@@ -10,7 +10,7 @@ def definitions(make):
         ("ebitda_interest", "EBITDA / interest expense", "Debt", "Defined EBITDA / separately reported interest expense", "x", "Earnings-based coverage of interest expense.", "Excludes principal repayments and capex; not comprehensive debt-service coverage.", True),
         ("debt_capital", "Debt / capital — including NCI", "Debt", "Debt / (debt + consolidated equity including NCI)", "%", "Borrowings as a share of the defined book-capital base.", "Requires reported debt including finance leases and nonnegative consolidated equity; no overlapping debt sums.", True),
         ("equity_assets", "Consolidated equity / assets", "Capital efficiency", "Equity including NCI / total assets", "%", "The book-equity share of the asset base.", "Negative equity is retained; this is not a market-value capital structure.", False),
-        ("effective_tax", "Effective tax rate — reconciled", "Capital efficiency", "Income tax expense / continuing pretax income", "%", "Historical effective tax rate supporting the labelled ROIC proxy.", "Requires positive pretax income, 0–100% tax rate and NI/tax reconciliation. Not a marginal or operating tax rate.", True),
+        ("effective_tax", "Effective tax rate — reported continuing operations", "Capital efficiency", "Income tax expense / continuing pretax income", "%", "Historical effective tax rate supporting the labelled ROIC proxy.", "Matching continuing-operations tax and pretax concepts, positive pretax income and 0–100% rate. Not a marginal or operating tax rate; does not require a separately tagged consolidated NI.", True),
         ("nopat_proxy", "After-tax operating income — ETR proxy", "Capital efficiency", "Operating income × (1 − reported effective tax rate)", "currency", "Operating profit after a clearly specified historical tax proxy.", "Consolidated effective tax is not necessarily the operating tax allocation; not reported NOPAT.", True),
         ("invested_capital_proxy", "Invested capital — cash-deducted proxy", "Capital efficiency", "Debt including finance leases + equity including NCI − cash equivalents", "currency", "A reproducible book-capital denominator for the ROIC proxy.", "Deducts all cash, not estimated excess cash. No silent investment or operating-lease adjustments; requires positive capital.", True),
         ("roic_proxy", "ROIC — effective-tax, cash-deducted proxy", "Capital efficiency", "After-tax operating income proxy / average invested capital proxy", "%", "Historical operating return on a defined average book-capital base.", "Not Morningstar ROIC or after-tax RNOA. Two-point averages; consolidated ETR and all-cash deduction are explicit approximations.", True),
@@ -67,16 +67,16 @@ def calculate(engine, d, p):
         return ""
 
     key = d.key
-    if key in {"ebitda", "effective_tax"}:
+    if key == "effective_tax":
+        result = ratio(get("tax_total"), get("pretax_continuing"))
+        if result.value is not None and not 0 <= result.value <= 1:
+            return blocked("Effective tax rate is outside 0–100%; no normalized tax rate is assumed.", (result,))
+        return result
+    if key == "ebitda":
         problem = pretax_check()
         base = (get("net_income_total"), get("tax_total"), get("pretax_continuing"))
         if problem:
             return blocked(problem, base)
-        if key == "effective_tax":
-            result = ratio(base[1], base[2])
-            if result.value is not None and not 0 <= result.value <= 1:
-                return blocked("Effective tax rate is outside 0–100%; no normalized tax rate is assumed.", (result,))
-            return result
         interest, da = get("interest"), get("da_total")
         if any(a.value is not None and a.value < 0 for a in (interest, da)):
             return blocked("Negative interest or D&A cannot be treated as an EBITDA addback.", (*base, interest, da))
@@ -141,7 +141,7 @@ def calculate(engine, d, p):
         if key == "parent_earnings_growth":
             prior = engine.get(growth_inputs[key], previous)
         else:
-            prior = same_filing_prior(engine, current, previous)
+            current, prior = same_filing_pair(engine, current, previous)
         if current.value is not None and prior.value is not None and not equivalent(current, prior):
             return blocked("Growth inputs have different accounting scopes or units.", (current, prior))
         return calc("{0}/{1}-1", (current, prior), lambda x,y:x/y-1, prior)
@@ -165,10 +165,47 @@ def same_filing_prior(engine, current, previous):
     if not current.fact:
         return missing(current.label, previous, "Current source observation is unavailable.", current.unit)
     f = current.fact
-    candidates = [x for x in (*engine.selected, *engine.bundle.raw_facts, *engine.bundle.disclosures)
+    observations = (engine.observations if hasattr(engine,"observations") else
+                    (*engine.selected, *engine.bundle.raw_facts, *engine.bundle.disclosures))
+    candidates = [x for x in observations
                   if x.end == previous and x.accession == f.accession and x.tag == f.tag
                   and x.unit == f.unit and x.dimensions == f.dimensions
                   and x.row_role == f.row_role and (x.start is None) == (f.start is None)]
-    if not candidates or len({(x.value,x.start,x.presentation_value) for x in candidates}) != 1:
+    # An omitted display override means the source value is displayed. SEC API,
+    # inline facts and note facts can therefore be identical observations even
+    # though only one representation explicitly supplies that override.
+    if not candidates or len({(x.value, x.start, x.presentation_value if x.presentation_value is not None else x.value)
+                              for x in candidates}) != 1:
         return missing(current.label, previous, "An unambiguous same-filing comparative is required; split or definition bases are not assumed.", current.unit)
     return source_datum(max(candidates, key=lambda x: (bool(x.context_id), bool(x.decimals))))
+
+
+def same_filing_pair(engine, current, previous):
+    """Latest available filing containing both years, with actual source inputs.
+
+    A latest-year comparative can drop its predecessor from the filing. In that
+    case use a real earlier common-filing pair; do not divide two split bases.
+    """
+    from dataclasses import replace
+    from .analysis import source_datum
+    prior = same_filing_prior(engine, current, previous)
+    if prior.value is not None or current.fact is None:
+        return current, prior
+    f = current.fact
+    observations = (engine.observations if hasattr(engine,"observations") else
+                    (*engine.selected, *engine.bundle.raw_facts, *engine.bundle.disclosures))
+    candidates = [x for x in observations
+                  if x.end == f.end and x.tag == f.tag and x.unit == f.unit
+                  and x.dimensions == f.dimensions and x.row_role == f.row_role
+                  and (x.start is None) == (f.start is None)]
+    for vintage in sorted({(x.filed,x.accession) for x in candidates}, reverse=True):
+        group = [x for x in candidates if (x.filed,x.accession)==vintage]
+        if len({(x.value,x.start,x.presentation_value if x.presentation_value is not None else x.value) for x in group}) != 1:
+            continue
+        candidate = max(group,key=lambda x:(bool(x.context_id),bool(x.decimals)))
+        candidate = replace(candidate,selection_reason=candidate.selection_reason+
+                            " Latest available common-filing comparison; its reported basis can differ from the statement's independently selected columns.")
+        prior = same_filing_prior(engine,source_datum(candidate),previous)
+        if prior.value is not None:
+            return source_datum(candidate), prior
+    return current, prior

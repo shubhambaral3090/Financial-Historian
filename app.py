@@ -21,6 +21,7 @@ from financial_historian.models import STATEMENTS, Company, StatementBundle
 from financial_historian.market import YahooFinanceProvider
 from financial_historian.research import ResearchController
 from financial_historian.service import FinancialHistorian
+from financial_historian.statement_html import statement_html
 from financial_historian.universe import UniverseProvider, shuffled_suggestions
 
 ROOT = Path(__file__).resolve().parent
@@ -93,6 +94,7 @@ def clear_workbook() -> None:
 def select_company(company: Company) -> None:
     clear_workbook()
     st.session_state["selected_company"] = company
+    st.session_state["_force_company_check"] = False
     st.query_params["cik"] = company.cik
     st.query_params["ticker"] = company.ticker
     st.rerun()
@@ -234,7 +236,7 @@ def value_periods(bundle: StatementBundle) -> list[str]:
     return sorted({period for rows in bundle.statements.values() for row in rows for period in row.values})
 
 
-def render_bundle(bundle: StatementBundle) -> None:
+def render_bundle(bundle: StatementBundle, analysis=None) -> None:
     periods = sorted(bundle.periods)
     retrieved_periods = value_periods(bundle)
     with st.container(border=True):
@@ -263,7 +265,7 @@ def render_bundle(bundle: StatementBundle) -> None:
         count = len(bundle.warnings)
         st.caption(f"{count} retrieval and accounting {'note is' if count == 1 else 'notes are'} available in Coverage & notes below and in the workbook.")
 
-    render_analytics(bundle, render_statements)
+    render_analytics(bundle, render_statements, analysis=analysis)
 
 
 def render_statements(bundle: StatementBundle) -> None:
@@ -279,37 +281,7 @@ def render_statements(bundle: StatementBundle) -> None:
             if not rows:
                 st.info("No usable annual figures were extracted for this statement. Review coverage and the linked filings.")
                 continue
-            columns = "".join(f"<th scope='col'>{html.escape(period)}</th>" for period in periods)
-            body = []
-            previous_section = ""
-            for row in rows:
-                if row.section and row.section != previous_section:
-                    body.append(f"<tr class='statement-section'><th scope='row'>{html.escape(row.section)}</th><td colspan='{len(periods) + 1}'></td></tr>")
-                    previous_section = row.section
-                is_currency = row.unit in CURRENCIES
-                unit = f"{row.unit} million" if is_currency else row.unit
-                cells = []
-                for period in periods:
-                    fact = row.values.get(period)
-                    if fact is None:
-                        cells.append("<td class='missing' aria-label='Unavailable'>—</td>")
-                        continue
-                    value = fact.presentation_value if fact.presentation_value is not None else fact.value
-                    value = value / 1_000_000 if is_currency else value
-                    number = f"{abs(value):,.6f}".rstrip("0").rstrip(".")
-                    text = f"({number})" if value < 0 else number
-                    source = html.escape(fact.source_url, quote=True)
-                    if valid_source(fact.source_url):
-                        cells.append(f"<td><a href='{source}' target='_blank' rel='noopener noreferrer' title='Open SEC source'>{text}</a></td>")
-                    else:
-                        cells.append(f"<td>{text}</td>")
-                emphasis = " class='statement-total'" if row.is_total else ""
-                body.append(f"<tr{emphasis}><th scope='row'>{html.escape(row.label)}</th><td class='unit'>{html.escape(unit)}</td>{''.join(cells)}</tr>")
-            st.html(
-                f"<div class='statement-preview' tabindex='0' role='region' aria-label='{html.escape(statement)} annual history'>"
-                f"<table><thead><tr><th scope='col'>Line item</th><th scope='col'>Unit</th>{columns}</tr></thead>"
-                f"<tbody>{''.join(body)}</tbody></table></div>"
-            )
+            st.html(statement_html(bundle, statement))
 
     with st.expander("Coverage & notes"):
         st.write("The search discovers available annual filings, while statement tabs present the latest 20 fiscal periods. SEC electronic filings and supported formats may cover only part of a company's life.")
@@ -491,9 +463,9 @@ if "universe" not in st.session_state:
     except Exception:
         pass
 if selected:
-    rendered = {"workbook": False}
     heading_area = st.empty()
     market_area = st.empty()
+    preview_area = st.empty()
     financial_area = st.empty()
     with heading_area.container():
         render_heading(selected)
@@ -503,7 +475,11 @@ if selected:
             step = st.empty()
 
             def on_event(event):
-                if event.kind == "progress":
+                if event.kind == "timing":
+                    record(f"duration_{event.message}={event.duration_seconds:.3f}s")
+                elif event.kind == "diagnostic":
+                    record(event.message)
+                elif event.kind == "progress":
                     message = sanitize(event.message)
                     step.write(message)
                     st.session_state["retrieval_messages"].append(message)
@@ -519,22 +495,26 @@ if selected:
                         render_quote(event.quote, event.message)
                 elif event.kind == "financial" and event.bundle:
                     st.session_state["bundle"] = event.bundle
-                    with financial_area.container():
-                        # Static preview can be replaced in the same Streamlit
-                        # run. Interactive controls must only be created once.
-                        st.info("Statements retrieved. Building schedules and the Excel workbook…")
-                        st.caption(f"{len(event.bundle.periods)} selected annual periods. Source checks and the matching workbook are being prepared automatically.")
+                    with preview_area.container():
+                        # Keep loading content in a separate placeholder. It
+                        # is cleared without replacing its children with the
+                        # final interactive fragment in the same run.
+                        st.info("Statements retrieved. Preparing the matching analysis and Excel workbook…")
+                        st.caption("Currency amounts in millions. EPS and share counts retain their reported basis; older columns may use different split bases.")
+                        for statement in STATEMENTS:
+                            with st.expander(statement, expanded=statement == STATEMENTS[0]):
+                                st.html(statement_html(event.bundle, statement))
                 elif event.kind == "workbook" and event.workbook and st.session_state.get("bundle"):
                     store_workbook(event.workbook, st.session_state["selected_company"])
-                    financial_area.empty()
-                    with financial_area.container():
-                        render_bundle(st.session_state["bundle"])
-                    rendered["workbook"] = True
+                    # Interactive fragments must initialize at the same root
+                    # location on fresh, cached and widget runs. Render below
+                    # after the loader exits; the static statements are already
+                    # visible while the exporter runs.
 
             try:
                 result = get_controller().load(
                     get_service(user_agent), selected, get_market_provider(),
-                    force_refresh=True, on_event=on_event,
+                    force_refresh=st.session_state.pop("_force_company_check", True), on_event=on_event,
                 )
             except Exception:
                 # Fail closed without reflecting contact-bearing service exceptions.
@@ -552,6 +532,7 @@ if selected:
                 status.update(label="Research page ready" if not (result.sec_error or result.market_error or result.workbook_error)
                               else "Research page loaded with coverage notices", state="complete", expanded=False)
                 record("page_loaded")
+    preview_area.empty()
     result = st.session_state.get("research")
     if result:
         with heading_area.container():
@@ -567,10 +548,8 @@ if selected:
             st.caption(f"SEC retrieved {result.sec_retrieved_at} (UTC)" + (" · last successful cached result" if result.sec_stale else ""))
             if result.workbook:
                 st.caption(f"Workbook generated {result.workbook_generated_at} (UTC)")
-            if not rendered["workbook"]:
-                financial_area.empty()
-                with financial_area.container():
-                    render_bundle(result.bundle)
+            with financial_area.container():
+                render_bundle(result.bundle, analysis=result.analysis)
         elif result.sec_error:
             with financial_area.container():
                 st.info("Financial statements are unavailable for this check. Market context remains independent.")

@@ -31,7 +31,8 @@ _CONCEPTS: dict[tuple[str, str], Concept] = {}
 
 def clean_label(label: str) -> str:
     # Legacy EDGAR files occasionally decode Windows-1252 punctuation as controls.
-    return label.replace("\x92", "’").replace("\x91", "‘").replace("\x96", "–").replace("\x97", "—").strip()
+    label = label.replace("\x92", "’").replace("\x91", "‘").replace("\x96", "–").replace("\x97", "—").strip()
+    return re.sub(r"\s*\(Deprecated \d{4}-\d{2}-\d{2}\)", "", label, flags=re.I)
 
 
 def _label_key(label: str) -> str:
@@ -63,9 +64,23 @@ _register(P, "cost_of_sales", "Cost of sales", "Income statement", 20,
 _register(P, "gross_profit", "Gross profit", "Income statement", 30, ["GrossProfit"], ["Gross profit", "Gross margin"], total=True, supplement=True)
 _register(P, "research_development", "Research and development", "Operating expenses", 40, ["ResearchAndDevelopmentExpense"], ["Research and development"])
 _register(P, "selling_general_admin", "Selling, general and administrative", "Operating expenses", 50, ["SellingGeneralAndAdministrativeExpense"], ["Selling, general and administrative", "Selling, general and administrative expenses"])
+_register(P, "selling_marketing", "Sales and marketing", "Operating expenses", 51,
+          ["SellingAndMarketingExpense"], ["Sales and marketing", "Selling and marketing"])
+_register(P, "general_admin", "General and administrative", "Operating expenses", 52,
+          ["GeneralAndAdministrativeExpense"], ["General and administrative"])
+_register(P, "purchased_intangible_amortization", "Amortization of purchased intangible assets", "Operating expenses", 55,
+          labels=["Amortization of purchased intangible assets"])
+_register(P, "restructuring", "Restructuring and other charges", "Operating expenses", 60,
+          labels=["Restructuring and other charges"])
 _register(P, "operating_expenses", "Total operating expenses", "Operating expenses", 70, ["OperatingExpenses"], ["Operating expenses", "Total operating expenses"], total=True, supplement=True)
 _register(P, "operating_income", "Operating income / (loss)", "Income statement", 80, ["OperatingIncomeLoss"], ["Operating income", "Operating income (loss)", "Income from operations", "Operating profit"], total=True, supplement=True)
 _register(P, "nonoperating", "Non-operating income / (expense), net", "Income statement", 90, ["NonoperatingIncomeExpense"], ["Other income/(expense), net", "Other income (expense), net", "Non-operating income (expense), net"])
+_register(P, "interest", "Interest expense", "Non-operating items", 92,
+          ["InterestExpense", "InterestExpenseNonoperating", "InterestExpenseNonOperating"], ["Interest expense"])
+_register(P, "interest_income", "Interest income", "Non-operating items", 91,
+          ["InvestmentIncomeInterest"], ["Interest income"])
+_register(P, "interest_dividend_income", "Interest and dividend income", "Non-operating items", 91,
+          ["InvestmentIncomeInterestAndDividend"], ["Interest and dividend income"])
 _register(P, "pretax_income", "Income / (loss) before tax", "Income statement", 110,
           ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"],
           ["Income before provision for income taxes", "Income before income taxes", "Income before taxes", "Earnings before income taxes"], total=True, supplement=True)
@@ -204,7 +219,8 @@ def _unscoped_concept_for(fact: Fact) -> Concept | None:
     if fact.statement == P and label in {"basic", "diluted"}:
         prefix = "eps_" if fact.unit.endswith("/shares") else "shares_" if fact.unit == "shares" else ""
         return _CONCEPTS.get((P, prefix + label))
-    if fact.statement == B and re.fullmatch(r"accounts receivable less allowances of (?:[0-9 ]+ and [0-9 ]+ respectively|[0-9 ]+ in each period)", label):
+    if fact.statement == B and (re.fullmatch(r"accounts receivable less allowances of (?:[0-9 ]+ and [0-9 ]+ respectively|[0-9 ]+ in each period)", label)
+                                or re.fullmatch(r"accounts receivable net of allowance(?:s)? for doubtful accounts of [a-z0-9 ]+", label)):
         return _CONCEPTS[(B, "receivables")]
     if fact.statement == B and label in {"marketable securities", "term debt", "deferred revenue"}:
         section = _label_key(fact.section)
@@ -282,9 +298,24 @@ def fallback_presentation(fact: Fact) -> float | None:
     return None
 
 
-def row_order(fact: Fact) -> int:
+def row_order(fact: Fact) -> tuple[int, int]:
     concept = concept_for(fact)
-    return concept.order if concept else 1000
+    order = concept.order if concept else 1000
+    section = _label_key(concept.section if concept else fact.section)
+    if fact.statement == B:
+        groups = {"current assets":10,"noncurrent assets":20,"non current assets":20,
+                  "assets":30,"current liabilities":40,"noncurrent liabilities":50,
+                  "non current liabilities":50,"liabilities":60,"equity":70}
+        return groups.get(section,90),order
+    if fact.statement == C:
+        return {"operating activities":10,"investing activities":20,
+                "financing activities":30,"cash reconciliation":40}.get(section,90),order
+    if concept:
+        group = 10 if order<=30 else 20 if order<=70 else 30 if order<=80 else 40 if order<110 else 50 if order<150 else 60 if order<170 else 70
+    else:
+        group = {"net sales":10,"cost of sales":10,"operating expenses":20,
+                 "non operating items":40,"per share data":60,"share counts":70}.get(section,90)
+    return group,order
 
 for key, label, order, tag in [
     ("cfo_continuing", "Operating cash flow — continuing operations", 91, "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"),

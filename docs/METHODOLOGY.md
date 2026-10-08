@@ -114,4 +114,32 @@ exports carry supporting records; bounded runtime caches are not a professional'
 record-retention policy. Users must retain required evidence in their own workflow.
 Historical ratios imply neither causation nor future performance nor investment merit.
 
-See [release evidence and acceptance gaps](RELEASE_v0.6.md) before professional use.
+## v0.7 compatibility repairs
+
+An absent display override means the source value is displayed. Identical API,
+inline and note representations do not become conflicts merely because one has
+an explicit display override. Genuine value/sign differences still block a pair.
+HTML conventional fiscal starts can use a uniquely supported structured annual
+start from the same accession/end within seven days. Original observations and
+the normalization reason remain available; distinct annual starts are not merged.
+
+An unchanged amount can use its observed representation in a common filing for
+analytical compatibility. Original/display values, concept, unit, dates, role and
+dimensions must match. If amounts changed, the older value is not substituted.
+Parent-based ROA and ROE are separately named alternatives; their availability
+never establishes zero preferred equity or noncontrolling interests.
+
+The reported effective tax rate is matching continuing-operations income tax
+expense divided by pretax income. It does not require a separately tagged
+consolidated NI, but still requires compatible units/vintages, positive pretax
+income and a 0–100% rate. EBITDA retains the NI/tax/pretax reconciliation.
+Current marketable securities can supply the specified quick-ratio investment
+component; conflicting overlapping investment totals are not added.
+
+EPS/share growth uses the latest unambiguous filing with both fiscal years.
+Where that differs from the independently selected statement columns, the
+Per-share Basis review discloses both representations. This is not uniform split
+adjustment or verification of a corporate-action event. Filing Changes similarly
+compares representations without certifying every change as a restatement.
+
+See [release evidence and acceptance gaps](RELEASE_v0.7.md) before professional use.

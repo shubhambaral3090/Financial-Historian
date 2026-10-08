@@ -11,6 +11,7 @@ import time
 from urllib.parse import urljoin, urlsplit
 
 import requests
+from . import __version__
 
 
 class SecAccessError(RuntimeError):
@@ -37,7 +38,7 @@ class SecClient:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": f"FinancialHistorian/0.1 {user_agent}",
+            "User-Agent": f"Fishtorian/{__version__} {user_agent}",
             "Accept-Encoding": "gzip, deflate",
         })
 

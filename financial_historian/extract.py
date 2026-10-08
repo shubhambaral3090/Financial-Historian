@@ -41,7 +41,7 @@ ProfitLossAttributableToOwnersOfParent ProfitLossAttributableToNoncontrollingInt
 EarningsPerShareBasic EarningsPerShareDiluted BasicEarningsLossPerShare DilutedEarningsLossPerShare
 WeightedAverageNumberOfSharesOutstandingBasic WeightedAverageNumberOfDilutedSharesOutstanding
 WeightedAverageNumberOfOrdinarySharesOutstandingBasic WeightedAverageNumberOfOrdinarySharesOutstandingDiluted
-InterestExpense InterestExpenseNonOperating InterestIncomeExpenseNonoperatingNet InvestmentIncomeInterest
+InterestExpense InterestExpenseNonOperating InterestExpenseNonoperating InterestIncomeExpenseNonoperatingNet InvestmentIncomeInterest
 InterestAndDebtExpense InterestIncome OtherNonoperatingIncomeExpense OtherOperatingIncomeExpenseNet
 NonoperatingIncomeExpense EquityMethodInvestmentsIncomeLoss IncomeLossFromDiscontinuedOperationsNetOfTax
 RestructuringAndRelatedCostIncurredInPeriod DepreciationDepletionAndAmortization DepreciationDepletionAndAmortizationExpense
@@ -411,9 +411,9 @@ def _cash_column_periods(nodes, contexts, filing: Filing) -> dict[int, tuple[str
 def _cash_instant_period(node, instant: str, label: str, tag: str, columns: dict[int, tuple[str, str]]) -> tuple[str, str, str] | None:
     if "cash" not in tag.lower() and "cash" not in label.lower():
         return None
-    if re.search(r"\bbeginning\b|\bstart\s+of\s+(?:the\s+)?(?:year|period)\b", label, re.I):
+    if re.search(r"\bbeginning\b|\bstart\s+of\s+(?:the\s+)?(?:fiscal\s+)?(?:year|period)\b", label, re.I):
         role = "cash_begin"
-    elif re.search(r"\bending\b|\bend\s+of\s+(?:the\s+)?(?:year|period)\b", label, re.I):
+    elif re.search(r"\bending\b|\bend\s+of\s+(?:the\s+)?(?:fiscal\s+)?(?:year|period)\b|\bat\s+(?:fiscal\s+)?year[- ]end\b", label, re.I):
         role = "cash_end"
     else:
         return None
@@ -785,7 +785,9 @@ def assemble_bundle(company: Company, filings: list[Filing], facts: list[Fact], 
                                 include_on_face, row_identity, row_order)
 
     accepted = [fact for fact in _deduplicate(facts) if fact.statement in STATEMENTS and fact.form.upper() in ANNUAL_FORMS and math.isfinite(fact.value) and _date(fact.end) and (fact.statement == STATEMENTS[1] and fact.start is None or fact.statement != STATEMENTS[1] and _annual_duration(fact.start, fact.end))]
-    result = StatementBundle(company=company, filings=filings, raw_facts=accepted, coverage=coverage, warnings=list(warnings))
+    result = StatementBundle(company=company, filings=filings, raw_facts=list(accepted), coverage=coverage, warnings=list(warnings))
+    from .compatibility import reconcile_html_periods
+    accepted = reconcile_html_periods(accepted)
     revenue_keys = {"revenue", "net_sales", "contract_revenue"}
     if len({concept_key(f) for f in accepted if concept_key(f) in revenue_keys}) > 1:
         result.warnings.append("Revenue observations have different scopes (total revenue, net sales or customer contracts); they remain separately identified.")
@@ -926,6 +928,11 @@ def assemble_bundle(company: Company, filings: list[Filing], facts: list[Fact], 
                 statement_row = StatementRow(picked.tag, label, picked.unit,
                                              accepted_tags={picked.tag}, section=picked.section,
                                              is_total=bool(concept and concept.is_total))
+                if statement == STATEMENTS[0] and concept:
+                    section_names = {10:"Revenue and gross profit",20:"Operating expenses",
+                                     30:"Operating result",40:"Non-operating items",
+                                     50:"Pretax and net income",60:"Per share data",70:"Share counts"}
+                    statement_row.section = section_names.get(row_order(picked)[0],picked.section)
                 rows[statement][key] = statement_row
                 ordering[(statement, key)] = row_order(picked)
             statement_row.accepted_tags.add(picked.tag)

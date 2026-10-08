@@ -77,7 +77,7 @@ def test_selection_automatically_prepares_matching_workbook(ui_file, monkeypatch
     assert not app.exception
     assert FixtureHistorian.search_queries == [query]
     assert FixtureHistorian.resolve_calls == FixtureHistorian.generate_calls == 1
-    assert ("FIX", "1y", True) in FixtureMarket.calls
+    assert ("FIX", "1y", False) in FixtureMarket.calls
     workbook = app.session_state["workbook"]
     assert workbook.startswith(b"PK")
     assert app.session_state["workbook_name"] == "FIX_Financial_History.xlsx"
@@ -123,7 +123,7 @@ def test_browser_reload_query_rechecks_both_providers(ui_file, monkeypatch):
     refreshed.run()
     assert not refreshed.exception
     assert FixtureHistorian.generate_calls == 2
-    assert sum(period == "1y" and force for _, period, force in FixtureMarket.calls) == 2
+    assert sum(period == "1y" and force for _, period, force in FixtureMarket.calls) == 1
     assert refreshed.session_state["research"].sec_retrieved_at != prior_time
     assert refreshed.session_state["workbook"]
 

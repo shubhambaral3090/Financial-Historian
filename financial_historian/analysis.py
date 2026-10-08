@@ -6,6 +6,8 @@ Decimal arithmetic retains input precision until browser/XLSX presentation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections import Counter, defaultdict
+from functools import cached_property
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 import math
@@ -29,7 +31,7 @@ class Datum:
     fact: Fact | None = None
     reason: str = ""
 
-    @property
+    @cached_property
     def sources(self) -> tuple[Fact, ...]:
         if self.fact:
             return (self.fact,)
@@ -73,6 +75,7 @@ class Analysis:
     common_size: list[AnalysisRow]
     checks: list[Check]
     notes: list[str]
+    basis_reviews: list[dict] = field(default_factory=list)
 
 
 def definition(key, label, group, formula, unit, purpose, limitation, industrial=False, reference="Historical ratio convention; product definition."):
@@ -90,6 +93,8 @@ DEFINITIONS = [
     definition("capex_intensity", "PP&E purchases / revenue", "Capital investment", "ABS(PP&E purchases) / selected revenue", "%", "Cash investment in PP&E relative to revenue.", "Acquisitions, noncash additions and other productive assets are not included.", True),
     definition("roa", "Return on assets — consolidated", "Returns", "Consolidated net income / average total assets", "%", "Consolidated earnings relative to assets employed.", "Average uses two year-end balances; acquisitions can distort the comparison."),
     definition("roe", "Return on common equity", "Returns", "Common-shareholder income / average common equity", "%", "Common-shareholder earnings relative to common equity.", "Requires explicit common income and equity; parent equity is not assumed to exclude preferred equity."),
+    definition("roa_parent", "Return on assets — parent earnings", "Returns", "Parent net income / average total assets", "%", "Reported parent earnings relative to consolidated assets.", "Explicit ownership-scope difference: parent earnings exclude NCI while total assets include consolidated subsidiaries. Not consolidated ROA."),
+    definition("roe_parent", "Return on parent equity", "Returns", "Parent net income / average parent shareholders’ equity", "%", "Historical return to the parent's equity holders.", "Parent equity can include preferred equity. This does not substitute for return on common equity; nonpositive equity is withheld."),
     definition("current_ratio", "Current ratio", "Liquidity", "Current assets / current liabilities", "x", "Relationship between reported short-term assets and obligations.", "It does not measure the timing or realizability of individual assets.", True),
     definition("quick_ratio", "Quick ratio — strict components", "Liquidity", "(Cash + short-term investments + net trade receivables) / current liabilities", "x", "Specified liquid asset components relative to current liabilities.", "Every component must be disclosed; absent investments are not treated as zero.", True),
     definition("net_debt", "Reported debt incl. finance leases less cash", "Debt", "Reported total debt including finance leases − cash equivalents", "currency", "Specified borrowing measure after deducting cash equivalents.", "Requires a reported total; restricted cash and investments are not deducted.", True),
@@ -123,7 +128,7 @@ EXTRA_TAGS = {
     "net_income_total": (P, {"us-gaap:ProfitLoss"}),
     "common_income": (P, {"us-gaap:NetIncomeLossAvailableToCommonStockholdersBasic"}),
     "common_equity": (B, {"us-gaap:CommonStockholdersEquity"}),
-    "interest": (P, {"us-gaap:InterestExpense", "us-gaap:InterestExpenseNonOperating"}),
+    "interest": (P, {"us-gaap:InterestExpense", "us-gaap:InterestExpenseNonOperating", "us-gaap:InterestExpenseNonoperating"}),
     "debt_total": (B, {"us-gaap:DebtAndCapitalLeaseObligations"}),
     "ppe_gross": (B, {"us-gaap:PropertyPlantAndEquipmentGross"}),
     "pretax_continuing": (P, {"us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"}),
@@ -164,6 +169,10 @@ def missing(label: str, period: str, reason: str, unit: str = "") -> Datum:
 
 def source_datum(fact: Fact) -> Datum:
     v = fact.presentation_value if fact.presentation_value is not None else fact.value
+    if semantic_key(fact) == "interest" and fact.tag.startswith("us-gaap:"):
+        # XBRL expense signs describe the concept; printed parentheses describe
+        # its contribution to pretax income. Coverage uses the expense amount.
+        v = fact.value
     return Datum(fact.label, fact.end, fact.unit, Decimal(str(v)), fact=fact)
 
 
@@ -217,7 +226,18 @@ class Calculator:
     def __init__(self, bundle: StatementBundle):
         self.bundle = bundle
         self.periods = sorted(bundle.periods)
-        self.selected = [f for rows in bundle.statements.values() for row in rows for f in row.values.values()]
+        selected = [f for rows in bundle.statements.values() for row in rows for f in row.values.values()]
+        from .compatibility import common_filing_observations, reconcile_html_periods
+        self.observations = reconcile_html_periods([*selected, *bundle.raw_facts, *bundle.disclosures])
+        self.selected = common_filing_observations(selected, self.observations)
+        self._observations_by_key = defaultdict(list)
+        for fact in self.observations:
+            if not fact.dimensions:
+                self._observations_by_key[semantic_key(fact),fact.end].append(fact)
+        self._anchors = {}
+        for period in {f.end for f in self.selected}:
+            counts = Counter((f.filed,f.accession) for f in self.selected if f.end==period)
+            self._anchors[period] = max(counts,key=lambda v:(counts[v],v))
         self.memo: dict[tuple[str, str], Datum] = {}
         self.metric_memo: dict[tuple[str, str], Datum] = {}
         self.definitions = {d.key: d for d in DEFINITIONS}
@@ -251,6 +271,19 @@ class Calculator:
             result = missing(key.replace("_", " "), period, "Conflicting input observations or scopes; no value selected.")
         else:
             result = source_datum(max(candidates, key=lambda f: (bool(f.context_id), bool(f.decimals))))
+            anchor = self._anchors.get(period)
+            original = result.fact
+            if anchor and (original.filed,original.accession) != anchor:
+                compatible = [f for f in self._observations_by_key[key,period]
+                              if (f.filed,f.accession)==anchor and f.unit==original.unit
+                              and f.statement==original.statement
+                              and f.start==original.start and f.row_role==original.row_role
+                              and f.value==original.value and source_datum(f).value==result.value]
+                if compatible:
+                    from dataclasses import replace
+                    found = max(compatible,key=lambda f:(bool(f.context_id),bool(f.decimals)))
+                    result = source_datum(replace(found,selection_reason=found.selection_reason+
+                                                 " Unchanged amount verified in the statement's common calculation filing."))
         self.memo[key, period] = result
         return result
 
@@ -279,7 +312,8 @@ class Calculator:
 
     def days(self, period: str) -> Datum:
         revenue = self.revenue(period)
-        if not revenue.fact or not revenue.fact.start or revenue.fact.extraction == "html-table":
+        if (not revenue.fact or not revenue.fact.start or revenue.fact.extraction == "html-table"
+                and "Annual start verified" not in revenue.fact.selection_reason):
             return missing("Fiscal days", period, "An exact reported annual start date is required.", "days")
         count = (date.fromisoformat(period) - date.fromisoformat(revenue.fact.start)).days + 1
         return Datum("Actual inclusive fiscal days", period, "days", Decimal(count), inputs=(revenue,))
@@ -316,6 +350,8 @@ class Calculator:
             "ocf_margin": ("cfo", r), "cash_conversion": ("cfo", get("net_income_total")),
             "roa": ("net_income_total", self.avg("assets", p)),
             "roe": ("common_income", self.avg("common_equity", p)),
+            "roa_parent": ("net_income", self.avg("assets", p)),
+            "roe_parent": ("net_income", self.avg("equity", p)),
             "operating_return": ("operating_income", self.avg("assets", p)),
         }
         if key in pairs:
@@ -346,6 +382,11 @@ class Calculator:
             return missing(d.label, p, "A compatible revenue/cost/gross-profit relationship could not be verified.", d.unit)
         if key == "quick_ratio":
             a,b,c,e = get("cash"),get("short_term_investments"),get("receivables"),get("current_liabilities")
+            marketable = get("marketable_current")
+            if b.value is None and "Conflicting" not in b.reason:
+                b = marketable
+            elif b.value is not None and marketable.value is not None and b.value != marketable.value:
+                return missing(d.label, p, "Both short-term investments and current marketable securities are reported with different amounts; overlap requires review.", d.unit)
             return calc("({0}+{1}+{2})/{3}", (a,b,c,e), lambda w,x,y,z:(w+x+y)/z, e)
         if key == "net_debt":
             return calc("{0}-{1}", (get("debt_total"),get("cash")), lambda x,y:x-y)
@@ -418,7 +459,7 @@ def build_analysis(bundle: StatementBundle) -> Analysis:
             local = value.rsplit(":",1)[-1]
             local = re.sub(r"(?:Axis|Member)$","",local)
             return re.sub(r"(?<=[a-z])(?=[A-Z])"," ",local)
-        label = sample.label + (" · " + "; ".join(f"{readable(a)}: {readable(m)}" for a,m in dimensions) if dimensions else " · note disclosure")
+        label = (readable(tag) + " · " if dimensions else "") + sample.label + (" · " + "; ".join(f"{readable(a)}: {readable(m)}" for a,m in dimensions) if dimensions else " · note disclosure")
         d = definition("note:"+str(len(schedules[group])),label,group,"Reported disclosure",unit,
                        sample.selection_reason if group == "Operating KPIs" else "Annual note disclosure with explicit context.",
                        "Dimensions are not assumed additive. Maturity buckets are contractual as-of disclosures.")
@@ -447,7 +488,8 @@ def build_analysis(bundle: StatementBundle) -> Analysis:
     ]
     if not engine.industrial:
         notes.append("SEC industry classification is unknown or identifies a financial firm. Industrial-company metrics are withheld; reported schedules remain available.")
-    return Analysis(engine.periods,rows,schedules,common,checks,notes)
+    from .review import per_share_basis_reviews
+    return Analysis(engine.periods,rows,schedules,common,checks,notes,per_share_basis_reviews(engine))
 
 
 def validation_checks(engine: Calculator) -> list[Check]:
