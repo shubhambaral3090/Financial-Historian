@@ -1,148 +1,115 @@
-# Validation record
+# Validation record — v0.4.0
 
+Validated October 7, 2026 (America/Indianapolis). Provider timestamps in the
+application are explicitly labeled UTC or their exchange timezone.
 
-## Workbook correction and interface redesign (0.2.0)
+## Complete suites
 
-The user-supplied complete Apple export exposed defects missed by the initial
-latest-filing checks. It was compared directly with the Reliance presentation
-reference. The old export split equivalent revenue/net-income rows, suppressed
-available standardized figures behind partial HTML tables, lost split-cell
-negative numbers, and treated a few rows in three statements as full extraction.
+| Runtime (Linux) | Result |
+| --- | --- |
+| Python 3.12.14 | 375 passed, no skips |
+| Python 3.13.5 | 375 passed, no skips |
+| Python 3.14.6 | 375 passed, no skips |
 
-An offline reconstruction used the uploaded workbook's 7,157 source records and
-34 filing records. No new SEC documents were fetched and no missing earlier data
-was invented. The reconstructed workbook showed:
+Dependency compatibility checks passed in all three environments. Python 3.13
+uses an isolated uv-created environment; its dependency check used uv because
+that environment does not include pip. The reusable cloud setup script was
+executed successfully, including installation, dependency check and full tests.
 
-| Check | Old export | Corrected assembly |
-| --- | --- | --- |
-| Income statement rows | 30 | 17 |
-| Populated income statement cells | 263 | 292 |
-| Balance sheet rows | 83 | 43 |
-| Populated balance sheet cells | 639 | 665 |
-| Cash flow detail rows | 65 | 47 |
-| Populated cash flow detail cells | 451 | 509 |
-| Basic/diluted EPS and share counts, 2010–2016 | Missing | All 28 observations recovered |
+Coverage includes configurable Yahoo screen parsing, overlapping memberships,
+local shuffling, last-good fallback, TTL/cooldown/403/429/timeouts/malformed data,
+manual-list metadata, ticker/CIK resolution, provider-independent loading,
+browser-refresh rechecks, 20-period selection, empty periods, accounting scopes,
+continuity, privacy, provenance, chart fallback, and display/export equality.
 
-For 2016, recovered reported diluted EPS is 8.31, investing cash flow is
--45,977 million USD, and financing cash flow is -20,890 million USD. Operating
-cash flow of 66,231 million gives a net movement of -636 million, matching the
-change between reported opening and closing cash. Values are sourced rather
-than calculated into missing statement cells. Continuing-operation cash totals
-remain separate from total-operation figures. Original XBRL outflow signs and
-printed cash-flow signs remain individually traceable.
+Review found and fixed three integrity defects before release: partial network
+refreshes displacing better cached snapshots; older concurrent refreshes
+overwriting newer results; and inconsistent invalid-cell handling between the
+browser and workbook. Dedicated regressions cover each.
 
-The offline reconstruction retains all original source observations. Some
-standardized note/disclosure balances appear only in the Data Sheet when the
-native statement does not present them; none of the previously selected native
-financial monetary lines or company-specific statement lines was lost. Par value
-and authorized-share descriptor facts are kept out of the main balance sheet.
+## Real browser, mocked providers
 
-The actual input cannot supply income/cash-flow figures before 2007 or balance
-sheet figures before 2000. The new filing-index fallback is tested with mocked
-archive records; it has not been used here to establish earlier live coverage.
-Coverage checks also expose a 1 million USD disagreement in selected 2007 balance
-sheet totals from different filing vintages. Historical EPS remains as reported,
-with differing stock-split bases explicitly disclosed.
+Chromium/Playwright passed at desktop 1440 × 1100 and mobile 390 × 844 using
+fictional in-memory SEC/Yahoo providers. Tests exercise the actual Streamlit app,
+custom contact component, browser sessionStorage and downloaded XLSX bytes:
 
-All 186 tests passed on both Python 3.12.14 and Python 3.14.6, with no skipped
-tests. Dependency checks passed in both environments.
+- Centered first-launch contact dialog, then no contact fields on the main page.
+- Search/selection automatically loads quotes, statements and Excel.
+- Browser reload retains tab contact and selected CIK, and initiates a new check.
+- A separate tab requires its own contact.
+- Source-linked, signed values and exactly 20 periods match the downloaded Excel.
+- No old manual prepare/refresh buttons, document overflow, JavaScript exceptions,
+  unexpected external browser requests, or contact in rendered output/download.
+- Actual line-chart rendering and compact sidebar sparklines were inspected.
 
-The light interface was exercised in Chromium at desktop and mobile widths with
-an offline mocked SEC service, including first-launch contact setup, company
-search/selection, progress and downloading actual Excel bytes. No fixture contact
-was sent to the SEC. Streamlit AppTest covers settings/privacy, state reset,
-source signs, failed retrieval and coverage-only output. These are Linux checks;
-actual Windows execution and a new live full-history SEC retrieval remain unrun.
-
-Excel generation on a synthetic 32-year / 20,160-raw-observation workload improved
-from 26.29 seconds to 9.72 seconds in this environment. The smaller real uploaded
-Apple dataset exported in approximately 3.9 seconds. Network retrieval time is
-separate and depends on SEC responses and the local cache.
-
-## Web research layer (0.3.0 development validation)
-
-The next web-only layer adds a refreshable S&P 500/Nasdaq-100 directory, a
-20-fiscal-period presentation limit that leaves raw facts intact, a session-only
-first-launch SEC contact flow, and a provider-isolated Yahoo Finance adapter.
-Market quotes are labelled latest available close/delayed, timestamped, and
-bounded by an in-memory cache; a market-data failure does not block SEC
-statements. Universe and market adapters are tested with injected offline
-fixtures, not live provider calls. Yahoo Finance is not represented as guaranteed
-real-time data. A permanent offline Windows product and a full-universe SEC
-archive remain explicitly out of scope.
-
-## Launcher correction and Python 3.14.6
-
-The initial Windows launcher attempted an absent Python 3.12 and continued to
-dependency installation without a usable environment on the user's machine.
-The corrected launcher delegates setup to `scripts/launch_local.py` using the
-default installed Python. Creation must produce a usable interpreter before
-any dependency command runs. No specific absent runtime is requested.
-
-The corrected code passed 117 tests on CPython 3.14.6, including nine setup
-regressions for failed creation, false-success creation, invalid environments,
-installation failure, paths with spaces and repeatable startup. A fresh real
-Python 3.14.6 environment was created and prepared in a path containing spaces;
-the second preparation reused it successfully. The original 108 application
-tests also passed on Python 3.14.6. Windows x64 runtime wheels resolved and
-downloaded successfully. Actual Windows batch execution still needs the user's
-local acceptance check.
-
-## Initial application checks
-
-Version 0.1.0 was checked in the cloud on Python 3.12.
-
-- `python -m pytest -q`: 108 tests passed, none skipped.
-- `python -m pip check`: no broken requirements.
-- Cloud setup script rerun: installation and all 108 tests passed.
-- Streamlit startup and internal health request passed.
-- Browser AppTest exercises first-run settings, clickable company selection,
-  export, failure diagnostics, cash-flow signs and coverage-only results.
-- The retrieval tests include a mocked 65-year filing inventory, every historical
-  submissions shard, duplicate accessions and amendments. This demonstrates no
-  configured year cap; it is not a live 65-year coverage claim.
-
-Three actual annual SEC documents were inspected interactively and parsed:
-
-| Issuer | Period end | Accession | Extracted observations |
-| --- | --- | --- | --- |
-| Apple | 2025-09-27 | 0000320193-25-000079 | 194 |
-| Microsoft | 2026-06-30 | 0001193125-26-323660 | 223 |
-| JPMorgan Chase | 2025-12-31 | 0001628280-26-008131 | 311 |
-
-All three produced valid workbooks containing income statements, balance sheets,
-cash flows, raw source values and provenance. Latest-period beginning cash plus
-operating, investing, financing and reported exchange-rate effects reconciled
-to ending cash in all three. Printed outflow signs were checked separately from
-the underlying XBRL values. The checks inspected each newest filing and its
-comparatives; they did not fetch complete lifetime histories.
-
-The Windows launcher has been reviewed but could not be executed on this Linux
-machine. Run it on Windows 11 for the first local acceptance check. The user
-chose to enter a real SEC contact privately at first launch, so a full live
-production-client history download with that identity remains unrun here.
-
-## Optional full live check
-
-After saving your contact in the app, run from the repository root:
+Reproduce with optional `playwright==1.56.0` and installed Chromium:
 
 ```bash
-python -m scripts.smoke_sec --ticker AAPL
+.venv/bin/python tests/browser_smoke.py --chromium /usr/bin/chromium
 ```
 
-This uses the saved local contact or SEC_USER_AGENT without printing it, fetches
-all discoverable annual filings for that issuer and saves an XLSX in exports.
-Review its Sources & Coverage; successful retrieval does not establish complete
-lifetime coverage or validate every original financial line item.
+This is fixture-backed browser validation, not a live financial-data test.
+Screenshots were taken only after the contact dialog closed; user-uploaded files
+and generated workbooks are not committed or included in release source archives.
 
-## Coverage boundaries
+## Workbook comparison
 
-Discovery covers the SEC submissions inventory for the chosen CIK, including
-all listed historical shards. Unsupported documents, ambiguous observations,
-nonannual durations and inaccessible records are explicit gaps. Some periods
-use standard companyfacts fallback, which lacks custom-tag statement layout.
-Untagged supported HTML retains labels and locally generated row identifiers.
+The supplied Apple output was reconstructed offline and compared with the supplied
+Reliance Industries layout. Original uploads were not changed. The result has
+the 20 selected periods 2006–2025; the clean Data Sheet contains three annual
+financial matrices, not the former 18-column raw-fact dump.
 
-Older paper reports, scanned PDFs and non-SEC archives are not automatically
-searched or OCR-extracted by this first version. Pre-EDGAR and predecessor-CIK
-research can require manual work. There is no fixed 10-year or 50-year cap.
+The audit workbook contains 1,341 populated Data Sheet values, each with a source
+comment and SEC link. All 2,784 displayed-cell references were checked against
+Source Data for matching values and source records. Its 7,145 usable source
+records remain available separately. Main statement tabs, Data Sheet and browser
+use identical selected periods, including entirely blank periods.
+
+LibreOffice-rendered Data Sheets were inspected side by side. The reference has
+10 annual columns; the new workbook uses up to 20 and retains company-specific
+reported detail. No projections, reference ratios or invented financial values
+were copied. Raw facts, source signs and presentation signs remain separate.
+
+The underlying source data still cannot supply earlier income/cash-flow figures
+before 2007 in this Apple reconstruction. Its selected 2007 balance sheet also
+has a previously identified 1 million USD disagreement across filing vintages.
+These are explicit data/coverage limitations, not solved by formatting.
+
+## Windows and Python compatibility
+
+Launcher regressions pass on all three runtimes. It selects a compatible installed
+Python >=3.12,<4, checks wheels before package installation, detects incomplete
+ZIP extraction and preserves unusable existing environments with instructions.
+Automatic Python installation is disabled.
+
+The complete pinned runtime dependency set resolved to Windows x64 CPython 3.12
+and 3.14 wheels, including yfinance dependencies. **Native Windows CMD execution
+was not available**; the user's Windows 11 launch remains an acceptance check.
+Future Python releases remain conditional on compatible dependency wheels.
+
+## Live checks and known limits
+
+- A bounded live Yahoo AAPL request and supported predefined-screen request were
+  attempted. The cloud network proxy denied CONNECT with HTTP 403 before a usable
+  Yahoo payload was returned. Nonfatal failure handling worked; live quotes and
+  screen payloads are **not verified from this environment**.
+- No real SEC contact is configured here. No fixture identity was sent to the
+  SEC, and a fresh live full-company retrieval was **not performed**.
+- Earlier release records describe three modern annual filing parsing checks
+  (Apple, Microsoft, JPMorgan); those are historical, not this release's new
+  live validation and not evidence of full 20-period coverage.
+- Default index suggestions are the user-approved **manually maintained starter
+  lists**: 35 unique tickers, incomplete and not independently verified as current
+  constituent lists. The date records file maintenance, not certification.
+  Optional Yahoo market screeners do not establish S&P 500/Nasdaq-100 membership.
+- Scans, older plain text, nonstandard filings, predecessor CIKs, unavailable
+  sources and accounting changes can leave gaps. No complete index-wide extraction
+  accuracy claim, guaranteed real-time data or audited financial-history claim
+  is made.
+- No offline Windows product, installer, executable or permanent financial archive
+  was built. A bounded working cache is retained as documented.
+
+For an optional new live SEC acceptance check, privately configure a real
+`SEC_USER_AGENT` and run `.venv/bin/python -m scripts.smoke_sec --ticker AAPL`.
+Browser contact is session-only; the script does not load it or legacy settings.
+Always inspect Sources & Coverage and original filings, not just test counts.

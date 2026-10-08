@@ -67,7 +67,7 @@ def test_workbook_preserves_units_missing_values_and_chronological_periods():
     bundle = sample_bundle()
     workbook = loaded(bundle)
     assert workbook.sheetnames == ["Profit & Loss", "Balance Sheet", "Cash Flow",
-                                    "Cash Flow Detail", "Data Sheet", "Sources & Coverage", "Read Me"]
+                                    "Cash Flow Detail", "Data Sheet", "Source Data", "Sources & Coverage", "Read Me"]
     sheet = workbook["Profit & Loss"]
     assert [sheet.cell(4, c).value for c in range(2, 5)] == ["2022-12-31", "2023-12-31", "2024-12-31"]
     assert sheet["B5"].value == 42.25
@@ -83,11 +83,66 @@ def test_workbook_preserves_units_missing_values_and_chronological_periods():
     assert workbook["Cash Flow"]["B5"].value == -5.25
     assert workbook["Balance Sheet"]["B5"].value == 80
     assert sheet.freeze_panes == "B5"
-    raw = workbook["Data Sheet"]
+    raw = workbook["Source Data"]
     assert raw["E5"].value == 42_250_000
     assert raw["D7"].value == "USD/shares"
     assert raw["E7"].value == 3.21
     assert "'Profit & Loss'!B5" in raw["N5"].value
+
+
+def test_data_sheet_is_a_clean_three_statement_annual_matrix():
+    workbook = loaded(sample_bundle())
+    matrix = workbook["Data Sheet"]
+    assert matrix.max_column == 4
+    assert matrix.freeze_panes == "B6"
+    assert matrix.print_title_rows == "$1:$3"
+    headings = [row for row in matrix.iter_rows() if row[0].value == "Reported line item"]
+    assert len(headings) == 3
+    assert all([cell.value for cell in row[1:]] == ["2022-12-31", "2023-12-31", "2024-12-31"]
+               for row in headings)
+    assert [matrix[f"A{row}"].value for row in (4, 11, 15)] == ["Profit & Loss", "Balance Sheet", "Cash Flow"]
+    assert matrix["B6"].value == workbook["Profit & Loss"]["B5"].value == 42.25
+    assert matrix["C6"].value is None  # Missing is never a fabricated zero.
+    assert matrix["D6"].value == workbook["Profit & Loss"]["D5"].value == 50
+    assert matrix["B7"].value == 3.21
+    assert matrix["B8"].value == 13_000_000
+    assert matrix["B9"].value == 3
+    assert matrix["B13"].value == 80
+    assert matrix["C13"].value is None and matrix["D13"].value is None
+    assert matrix["B17"].value == -5.25
+    assert matrix["B6"].hyperlink.target == SOURCE
+    assert matrix["B6"].comment.text == workbook["Profit & Loss"]["B5"].comment.text
+    assert "20 fiscal periods" in matrix["A2"].value
+    assert "Source Data" in matrix["A3"].value
+    assert not any("SEC tag" in str(cell.value) for row in matrix for cell in row)
+
+
+def test_source_data_references_match_all_matrix_and_statement_values():
+    workbook = loaded(sample_bundle())
+    raw = workbook["Source Data"]
+    headers = [cell.value for cell in raw[4]]
+    assert headers == [
+        "Statement", "SEC tag / row identifier", "Reported label", "Reported unit", "Source/XBRL value (unscaled)",
+        "Annual display period start", "Annual display period end", "Accession", "Filed", "Form", "Extraction",
+        "Selection reason", "Source filing", "Displayed cells", "Statement presentation value (unscaled)",
+        "Original source instant", "Row role", "Reported section",
+    ]
+    matrix_references = 0
+    for record in raw.iter_rows(min_row=5, values_only=True):
+        if not record[13]:
+            continue
+        presented = record[14] if record[14] is not None else record[4]
+        expected = presented / 1_000_000 if record[3] in export.CURRENCIES else presented
+        for reference in record[13].split("; "):
+            name, coordinate = reference.split("!")
+            name = name.strip("'")
+            cell = workbook[name][coordinate]
+            assert cell.value == expected
+            assert f"SEC tag: {record[1]}" in cell.comment.text
+            assert record[7] in cell.comment.text
+            assert cell.hyperlink.target == record[12]
+            matrix_references += name == "Data Sheet"
+    assert matrix_references == 7
 
 
 def test_provenance_and_old_filing_gaps_survive_export():
@@ -111,19 +166,35 @@ def test_provenance_and_old_filing_gaps_survive_export():
     assert "No normalization" in readme_text
 
 
-def test_66_years_are_not_capped_and_custom_tags_are_retained():
+def test_20_period_presentation_keeps_all_66_raw_years_and_custom_tags():
+    from financial_historian.service import limit_statement_history
+
     periods = [f"{year}-12-31" for year in range(1960, 2026)]
     values = {period: fact(tag="example:SpecialRevenue", end=period, value=1_000_000) for period in periods}
     bundle = StatementBundle(Company("0000001234", "Long History Company"), periods=list(reversed(periods)))
     bundle.statements["Profit & Loss"] = [StatementRow("example:SpecialRevenue", "Special company revenue", "USD", values)]
+    bundle.raw_facts = list(values.values())
+    bundle = limit_statement_history(bundle)
     workbook = loaded(bundle)
     sheet = workbook["Profit & Loss"]
-    assert sheet.max_column == 67
-    assert sheet.cell(4, 2).value == "1960-12-31"
-    assert sheet.cell(4, 67).value == "2025-12-31"
-    assert sheet.cell(5, 67).value == 1
-    assert "example:SpecialRevenue" in sheet.cell(5, 67).comment.text
-    assert workbook["Data Sheet"].max_row == 70
+    assert sheet.max_column == 21
+    assert sheet.cell(4, 2).value == "2006-12-31"
+    assert sheet.cell(4, 21).value == "2025-12-31"
+    assert sheet.cell(5, 21).value == 1
+    assert "example:SpecialRevenue" in sheet.cell(5, 21).comment.text
+    assert workbook["Source Data"].max_row == 70
+    assert workbook["Source Data"]["G5"].value == "1960-12-31"
+    assert workbook["Source Data"]["N5"].value is None
+    matrix = workbook["Data Sheet"]
+    assert matrix.max_column == 21
+    assert matrix["B5"].value == "2006-12-31"
+    assert matrix["U5"].value == "2025-12-31"
+
+
+def test_export_rejects_unbounded_bundle_instead_of_silently_differing_from_browser():
+    bundle = StatementBundle(Company("1", "Example"), periods=[f"{year}-12-31" for year in range(2000, 2026)])
+    with pytest.raises(ValueError, match="latest 20 fiscal-period selection"):
+        build_workbook(bundle)
 
 
 def test_inconsistent_periods_and_units_are_blank_and_preserved_raw():
@@ -139,9 +210,9 @@ def test_inconsistent_periods_and_units_are_blank_and_preserved_raw():
     assert sheet["C5"].value is None
     assert "differs from column period" in sheet["B5"].comment.text
     assert "units were not mixed" in sheet["C5"].comment.text
-    assert workbook["Data Sheet"]["G5"].value == "2023-12-31"
-    assert workbook["Data Sheet"]["D6"].value == "EUR"
-    assert workbook["Data Sheet"]["N5"].value is None
+    assert workbook["Source Data"]["G5"].value == "2023-12-31"
+    assert workbook["Source Data"]["D6"].value == "EUR"
+    assert workbook["Source Data"]["N5"].value is None
 
 
 def test_reported_zero_is_zero_and_other_reported_units_are_unscaled():
@@ -166,9 +237,9 @@ def test_cash_payment_uses_visible_outflow_sign_and_retains_positive_xbrl_value(
     assert cell.value == -20_000
     assert "Source/XBRL value (unscaled): 20000000000" in cell.comment.text
     assert "Statement presentation value (unscaled): -20000000000" in cell.comment.text
-    assert workbook["Data Sheet"]["E5"].value == 20_000_000_000
-    assert workbook["Data Sheet"]["O5"].value == -20_000_000_000
-    assert workbook["Data Sheet"]["O4"].value == "Statement presentation value (unscaled)"
+    assert workbook["Source Data"]["E5"].value == 20_000_000_000
+    assert workbook["Source Data"]["O5"].value == -20_000_000_000
+    assert workbook["Source Data"]["O4"].value == "Statement presentation value (unscaled)"
 
 
 def test_zero_presentation_value_is_used_without_falling_back_to_source_value():
@@ -177,8 +248,8 @@ def test_zero_presentation_value_is_used_without_falling_back_to_source_value():
     bundle.statements["Profit & Loss"] = [StatementRow(reported.tag, reported.label, reported.unit, {reported.end: reported})]
     workbook = loaded(bundle)
     assert workbook["Profit & Loss"]["B5"].value == 0
-    assert workbook["Data Sheet"]["E5"].value == 42_000_000
-    assert workbook["Data Sheet"]["O5"].value == 0
+    assert workbook["Source Data"]["E5"].value == 42_000_000
+    assert workbook["Source Data"]["O5"].value == 0
 
 
 def test_beginning_and_ending_cash_keep_same_sec_tag_and_original_instant_dates():
@@ -202,7 +273,7 @@ def test_beginning_and_ending_cash_keep_same_sec_tag_and_original_instant_dates(
     assert "Original instant context: 2024-12-31" in cash["B6"].comment.text
     assert "Row role: cash_begin" in cash["B5"].comment.text
     assert "Row role: cash_end" in cash["B6"].comment.text
-    raw = workbook["Data Sheet"]
+    raw = workbook["Source Data"]
     assert raw["F5"].value == raw["F6"].value == "2024-01-01"
     assert raw["G5"].value == raw["G6"].value == "2024-12-31"
     assert raw["P5"].value == "2023-12-31"
@@ -227,10 +298,10 @@ def test_all_external_text_is_literal_even_when_it_looks_like_a_formula():
     workbook = loaded(bundle)
     assert workbook["Profit & Loss"]["A5"].value == "+SUM(1,1)"
     assert injection in workbook["Profit & Loss"]["B5"].comment.text
-    assert workbook["Data Sheet"]["M5"].value == injection
-    assert workbook["Data Sheet"]["P5"].value == "=NOW()"
-    assert workbook["Data Sheet"]["Q5"].value == "@role"
-    assert workbook["Data Sheet"]["M5"].hyperlink is None
+    assert workbook["Source Data"]["M5"].value == injection
+    assert workbook["Source Data"]["P5"].value == "=NOW()"
+    assert workbook["Source Data"]["Q5"].value == "@role"
+    assert workbook["Source Data"]["M5"].hyperlink is None
     assert workbook["Profit & Loss"]["B5"].hyperlink is None
     for sheet in workbook:
         for row in sheet:
@@ -255,7 +326,7 @@ def test_untrusted_source_urls_remain_plain_text(source):
     workbook = loaded(bundle)
     assert workbook["Profit & Loss"]["B5"].hyperlink is None
     assert source in workbook["Profit & Loss"]["B5"].comment.text
-    raw_rows = list(workbook["Data Sheet"].iter_rows(min_row=5, values_only=False))
+    raw_rows = list(workbook["Source Data"].iter_rows(min_row=5, values_only=False))
     source_cells = [row[12] for row in raw_rows if row[12].value == source]
     assert source_cells
     assert all(cell.hyperlink is None for cell in source_cells)
@@ -314,7 +385,7 @@ def test_verified_aliases_share_one_row_without_weakening_tag_validation():
     assert modern.tag in sheet["D5"].comment.text
     assert sheet["C5"].value is None
     assert "differs from its row tag" in sheet["C5"].comment.text
-    assert workbook["Data Sheet"]["B6"].value == unrelated.tag
+    assert workbook["Source Data"]["B6"].value == unrelated.tag
 
 
 def test_statement_layout_groups_rows_bolds_totals_and_keeps_units_explicit():
@@ -337,21 +408,28 @@ def test_statement_layout_groups_rows_bolds_totals_and_keeps_units_explicit():
     assert "USD million" in sheet["A2"].value
     assert sheet.max_column == 2
     assert "SEC tag" not in str([cell.value for cell in sheet[4]])
-    assert workbook["Data Sheet"]["R5"].value == "Assets"
-    assert workbook["Data Sheet"]["N5"].value == "'Balance Sheet'!B6"
+    assert workbook["Source Data"]["R5"].value == "Assets"
+    assert "'Balance Sheet'!B6" in workbook["Source Data"]["N5"].value
+    assert "'Data Sheet'!" in workbook["Source Data"]["N5"].value
 
 
-def test_missing_history_remains_in_coverage_without_empty_edge_columns():
+def test_missing_history_keeps_the_same_columns_as_the_browser_and_explains_gaps():
     bundle = sample_bundle()
     bundle.periods = ["1960-12-31", *bundle.periods, "2025-12-31"]
     workbook = loaded(bundle)
     sheet = workbook["Profit & Loss"]
-    assert [cell.value for cell in sheet[4]][1:] == ["2022-12-31", "2023-12-31", "2024-12-31"]
-    assert sheet["C5"].value is None  # Keep the internal annual gap visible.
+    selected = ["1960-12-31", "2022-12-31", "2023-12-31", "2024-12-31", "2025-12-31"]
+    assert [cell.value for cell in sheet[4]][1:] == selected
+    assert sheet["B5"].value is None and sheet["F5"].value is None
+    assert sheet["D5"].value is None  # Keep the internal annual gap visible.
+    for name in ("Balance Sheet", "Cash Flow", "Cash Flow Detail"):
+        assert [cell.value for cell in workbook[name][4]][1:] == selected
+    assert [cell.value for cell in workbook["Data Sheet"][5]][1:] == selected
     unavailable = [row for row in workbook["Sources & Coverage"].iter_rows(min_row=5, values_only=True)
                    if row[0] == "Unavailable period"]
-    assert {row[3] for row in unavailable if row[6].startswith("Profit & Loss:")} == {"1960-12-31", "2025-12-31"}
+    assert {row[3] for row in unavailable if row[6].startswith("Profit & Loss:")} == {"1960-12-31", "2023-12-31", "2025-12-31"}
     assert all(row[5] == "No selected values" for row in unavailable)
+    assert all("matching the online presentation" in row[6] for row in unavailable)
 
 
 def test_cash_overview_retains_all_company_detail_and_both_cell_references():
@@ -371,10 +449,11 @@ def test_cash_overview_retains_all_company_detail_and_both_cell_references():
     custom_cell = next(detail.cell(r, 2) for r in range(5, detail.max_row + 1)
                        if detail.cell(r, 1).value == custom.label)
     assert custom_cell.value == 17 and custom.tag in custom_cell.comment.text
-    raw = workbook["Data Sheet"]
+    raw = workbook["Source Data"]
     assert "'Cash Flow'!B5" in raw["N5"].value
     assert "'Cash Flow Detail'!B6" in raw["N5"].value
-    assert raw["N8"].value == f"'Cash Flow Detail'!{custom_cell.coordinate}"
+    assert f"'Cash Flow Detail'!{custom_cell.coordinate}" in raw["N8"].value
+    assert "'Data Sheet'!" in raw["N8"].value
     assert custom_cell.hyperlink.target == SOURCE
 
 
@@ -387,9 +466,11 @@ def test_export_reports_real_stages_and_supports_a_coverage_only_bundle():
     assert any("source observations" in message for message in messages)
     for name in ("Profit & Loss", "Balance Sheet", "Cash Flow"):
         assert "No supported statement values" in workbook[name]["A3"].value
-        assert workbook[name]["B4"].value is None
+        assert workbook[name]["B4"].value == "1960-12-31"
     rows = list(workbook["Sources & Coverage"].iter_rows(min_row=5, values_only=True))
-    assert len(rows) == 3 and all(row[3] == "1960-12-31" for row in rows)
+    gaps = [row for row in rows if row[0] == "Unavailable period"]
+    assert len(gaps) == 3 and all(row[3] == "1960-12-31" for row in gaps)
+    assert any(row[0] == "Presentation policy" and "20" in row[5] for row in rows)
 
 
 def test_continuing_cash_flows_are_explicitly_separate_in_overview():
@@ -430,5 +511,5 @@ def test_unclassified_older_rows_cannot_visually_inherit_the_prior_section(
     assert sheet["A7"].font.bold and sheet["B7"].value is None
     assert sheet["B8"].value == 42.25
     assert "Reported section: Not supplied" in sheet["B8"].comment.text
-    assert workbook["Data Sheet"]["R6"].value is None  # Preserve the missing source section.
-    assert workbook["Data Sheet"]["N6"].value == f"'{sheet_name}'!B8"
+    assert workbook["Source Data"]["R6"].value is None  # Preserve the missing source section.
+    assert f"'{sheet_name}'!B8" in workbook["Source Data"]["N6"].value

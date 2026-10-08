@@ -1,8 +1,9 @@
-"""Company search and retrieval of every available SEC annual filing."""
+"""SEC company validation, filing discovery and twenty-period retrieval."""
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 import re
 from urllib.parse import quote, unquote, urljoin, urlsplit
@@ -25,18 +26,62 @@ def limit_statement_history(bundle: StatementBundle, years: int = 20) -> Stateme
     remain complete so the workbook can explain what was discovered outside the
     presentation window.
     """
-    if not isinstance(years, int) or years < 1:
+    if isinstance(years, bool) or not isinstance(years, int) or years < 1:
         raise ValueError("History limit must be a positive integer.")
-    discovered = set(bundle.periods)
+    discovered = {filing.report_date for filing in bundle.filings if _valid_period(filing.report_date)}
+    discovered.update(bundle.periods)
     discovered.update(period for rows in bundle.statements.values() for row in rows for period in row.values)
     available = sorted(discovered, reverse=True)
     keep = set(available[:years])
-    for rows in bundle.statements.values():
-        for row in rows:
-            row.values = {period: fact for period, fact in row.values.items() if period in keep}
-    bundle.periods = sorted(keep, reverse=True)
-    bundle.warnings.append(f"Statement presentation is limited to the latest {years} fiscal periods; raw source records and filing coverage remain available for audit.")
-    return bundle
+    statements = {
+        statement: [replace(row, values={period: fact for period, fact in row.values.items()
+                                        if period in keep}, accepted_tags=set(row.accepted_tags))
+                    for row in rows]
+        for statement, rows in bundle.statements.items()
+    }
+    warnings = [warning for warning in bundle.warnings
+                if not warning.startswith(("Statement presentation is limited to the latest ",
+                                           "No verified statement observations are available for fiscal period"))]
+    warnings.append(f"Statement presentation is limited to the latest {years} fiscal periods; raw source records and filing coverage remain available for audit.")
+    observed = {period for rows in statements.values() for row in rows for period in row.values}
+    empty = sorted(keep - observed, reverse=True)
+    if empty:
+        warnings.append("No verified statement observations are available for fiscal period(s): "
+                        + ", ".join(empty) + "; blank columns are intentional.")
+    return replace(bundle, periods=sorted(keep, reverse=True), statements=statements,
+                   warnings=list(dict.fromkeys(warnings)))
+
+
+def _valid_period(value: str) -> bool:
+    try:
+        return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)) and date.fromisoformat(value) <= date.today()
+    except (TypeError, ValueError):
+        return False
+
+
+def normalize_cik(value: object) -> str:
+    """Accept only an actual, positive SEC identifier, never a guessed number."""
+    text = str(value).strip()
+    if not re.fullmatch(r"[0-9]{1,10}", text) or int(text) == 0:
+        raise ValueError("Invalid company identifier.")
+    return text.zfill(10)
+
+
+def normalize_ticker(value: str) -> str:
+    """Yahoo uses a dash where SEC directories may use a share-class dot."""
+    return str(value).strip().upper().replace(".", "-")
+
+
+def _validate_submissions(payload: object, expected_cik: str, *, require_identity: bool = False) -> None:
+    if not isinstance(payload, dict):
+        raise SecAccessError("The SEC company profile could not be validated.")
+    if require_identity or "cik" in payload:
+        try:
+            actual = normalize_cik(payload.get("cik", ""))
+        except ValueError:
+            raise SecAccessError("The SEC company identifier could not be validated.") from None
+        if actual != expected_cik:
+            raise SecAccessError("The SEC company identifier does not match the selected company.")
 
 
 def _archive_document_url(index_url: str, href: str, accession: str,
@@ -142,28 +187,68 @@ class FinancialHistorian:
         if re.fullmatch(r"\d{1,10}", identifier):
             # The ticker directory omits some delisted/older issuers. A known CIK
             # still resolves directly to the issuer's complete submissions.
-            cik = identifier.zfill(10)
+            cik = normalize_cik(identifier)
             payload = self.client.get_json(f"https://data.sec.gov/submissions/CIK{cik}.json", refresh=True)
+            _validate_submissions(payload, cik, require_identity=True)
             if not payload.get("name"):
                 return []
             tickers = payload.get("tickers", [])
             return [Company(cik, str(payload["name"]), str(tickers[0]) if tickers else "")]
         payload = self.client.get_json("https://www.sec.gov/files/company_tickers.json")
+        if not isinstance(payload, dict):
+            raise SecAccessError("The SEC company directory could not be read.")
         result = []
         for record in payload.values():
             if not isinstance(record, dict):
                 continue
             name = str(record.get("title", ""))
             ticker = str(record.get("ticker", ""))
-            cik = str(record.get("cik_str", "")).zfill(10)
-            if not cik.isdigit() or not name:
+            try:
+                cik = normalize_cik(record.get("cik_str", ""))
+            except ValueError:
                 continue
-            if q in name.casefold() or q in ticker.casefold() or q.lstrip("0") == cik.lstrip("0"):
-                rank = (0 if q == ticker.casefold() else
+            if not name:
+                continue
+            exact_ticker = normalize_ticker(q) == normalize_ticker(ticker)
+            if exact_ticker or q in name.casefold() or q in ticker.casefold() or q.lstrip("0") == cik.lstrip("0"):
+                rank = (0 if exact_ticker else
                         1 if ticker.casefold().startswith(q) else
                         2 if name.casefold().startswith(q) else 3)
                 result.append((rank, name, Company(cik, name, ticker)))
         return [company for _, _, company in sorted(result, key=lambda x: (x[0], x[1], x[2].ticker))[:30]]
+
+    def resolve_company(self, selected: Company) -> Company:
+        """Resolve Yahoo selections against SEC records before following filings.
+
+        Names supplied by market providers are only display hints. A Yahoo
+        ticker must match an SEC ticker exactly (allowing share-class dot/dash)
+        and the submissions response must independently confirm the CIK.
+        """
+        ticker = normalize_ticker(selected.ticker)
+        if selected.cik:
+            cik = normalize_cik(selected.cik)
+        else:
+            if not re.fullmatch(r"[A-Z0-9][A-Z0-9.-]{0,19}", ticker):
+                raise ValueError("Select a valid ticker or SEC company identifier.")
+            matches = {company.cik: company for company in self.search_companies(ticker)
+                       if normalize_ticker(company.ticker) == ticker}
+            if len(matches) != 1:
+                raise SecAccessError("This market ticker could not be matched unambiguously to an SEC company. "
+                                     "Try searching by company name or CIK.")
+            cik = next(iter(matches))
+        payload = self.client.get_json(f"https://data.sec.gov/submissions/CIK{cik}.json", refresh=True)
+        _validate_submissions(payload, cik, require_identity=True)
+        name = payload.get("name")
+        tickers = payload.get("tickers", [])
+        if not isinstance(name, str) or not name.strip() or not isinstance(tickers, list):
+            raise SecAccessError("The SEC company profile could not be validated.")
+        official_tickers = [value.strip() for value in tickers if isinstance(value, str) and value.strip()]
+        if ticker and ticker not in {normalize_ticker(value) for value in official_tickers}:
+            raise SecAccessError("The selected ticker is not associated with this SEC company identifier. "
+                                 "Search by company name or CIK to verify the issuer.")
+        official = next((value for value in official_tickers if normalize_ticker(value) == ticker),
+                        official_tickers[0] if official_tickers else "")
+        return Company(cik, name.strip(), official)
 
     @staticmethod
     def _filings(block: dict, cik: str) -> list[Filing]:
@@ -188,16 +273,15 @@ class FinancialHistorian:
         return records
 
     def annual_filings(self, company: Company, progress: Callable[[str], None]) -> list[Filing]:
-        if not re.fullmatch(r"\d{1,10}", company.cik):
-            raise ValueError("Invalid company identifier.")
-        cik = company.cik.zfill(10)
+        cik = normalize_cik(company.cik)
         data = self.client.get_json(f"https://data.sec.gov/submissions/CIK{cik}.json", refresh=True)
+        _validate_submissions(data, cik)
         section = data.get("filings", {})
         records = self._filings(section.get("recent", {}), cik)
         shards = section.get("files", [])
         for i, shard in enumerate(shards):
             name = shard.get("name", "")
-            if not re.fullmatch(r"CIK\d{10}-submissions-\d+\.json", name):
+            if not re.fullmatch(rf"CIK{cik}-submissions-\d+\.json", name):
                 raise SecAccessError("The SEC supplied an unexpected historical-file name; retrieval stopped safely.")
             progress(f"Reading historical filing index {i + 1} of {len(shards)}…")
             historical = self.client.get_json(f"https://data.sec.gov/submissions/{name}", refresh=True)
@@ -227,7 +311,7 @@ class FinancialHistorian:
             try:
                 document = self.client.get_bytes(url, ttl=30 * 86400)
             except SecAccessError as exc:
-                notes.append(str(exc))
+                notes.append("SEC document access failed: " + str(exc))
                 continue
             if url in complete_submissions or re.search(rb"<DOCUMENT\s*>", document, re.I):
                 annual_html = _annual_submission_html(document, filing.form)
@@ -245,14 +329,15 @@ class FinancialHistorian:
 
     def generate(self, company: Company, progress: Callable[[str], None] | None = None) -> StatementBundle:
         report = progress or (lambda _: None)
-        report("Finding all available annual filings; no year limit…")
+        report("Discovering annual filings and selecting the latest 20 fiscal periods…")
         filings = self.annual_filings(company, report)
         if not filings:
             raise ValueError("No supported annual SEC filings were found for this company. "
                              "Search an operating company that files annual reports, rather than a fund or ETF.")
         warnings = [
-            "Coverage is all available annual filings for this SEC company identifier, not guaranteed lifetime history. "
-            "EDGAR generally starts in the 1990s; older paper reports and predecessor identifiers may require manual research.",
+            "Statement retrieval and presentation cover up to the latest 20 fiscal periods for this SEC identifier. "
+            "All discovered annual filing links and available structured raw facts remain available for source review. "
+            "Older paper reports and predecessor identifiers may require manual research.",
             "Values use the latest available annual filing for each reported tag and period. "
             "Later comparative figures are not automatically proven restatements; changes are flagged for review.",
             "Verified equivalent concepts may share a historical row; original tags remain in each cell's sources. "
@@ -265,23 +350,43 @@ class FinancialHistorian:
             report("Loading SEC structured financial data…")
             payload = self.client.get_json(
                 f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company.cik.zfill(10)}.json", refresh=True)
+            _validate_submissions(payload, company.cik.zfill(10))
             facts.extend(parse_company_facts(payload, filings))
         except SecAccessError as exc:
             facts_warning = f"Structured company-facts data could not be loaded: {exc}"
             warnings.append(facts_warning)
+        selected_periods = set(sorted({filing.report_date for filing in filings
+                                      if _valid_period(filing.report_date)}, reverse=True)[:20])
+        eligible = sum(filing.report_date in selected_periods for filing in filings)
         coverage = []
+        read_count = 0
+        retrieval_failed = False
         for index, filing in enumerate(filings):
-            report(f"Reading annual filing {index + 1} of {len(filings)} · {filing.report_date or filing.filed} · {filing.form}…")
+            if filing.report_date not in selected_periods:
+                has_period = _valid_period(filing.report_date)
+                coverage.append(CoverageRecord(
+                    filing.accession, filing.report_date, filing.filed, filing.source_url,
+                    "outside presentation window" if has_period else "unsupported",
+                    "Filing document not retrieved because its fiscal period is outside the latest 20-period window. "
+                    "Available SEC structured source facts are retained."
+                    if has_period else "No valid annual fiscal period was reported in the filing index; "
+                    "document retrieval was omitted rather than assigning a guessed period."))
+                continue
+            read_count += 1
+            report(f"Reading annual filing {read_count} of {eligible} · {filing.report_date} · {filing.form}…")
             extracted = []
             problem = ""
             try:
                 filing, document, problem = self._filing_document(filing)
+                if document is None and "SEC document access failed:" in problem:
+                    retrieval_failed = True
                 filings[index] = filing
                 if document is not None:
                     extracted = parse_filing_html(document, filing)
                     facts.extend(extracted)
             except SecAccessError as exc:
                 problem = str(exc)
+                retrieval_failed = True
             except ValueError:
                 # Known malformed document errors become explicit coverage gaps.
                 problem = "The filing's statement format could not be interpreted safely; review it manually."
@@ -312,6 +417,9 @@ class FinancialHistorian:
                 detail += f" Missing statements: {', '.join(sorted(missing))}."
             coverage.append(CoverageRecord(filing.accession, filing.report_date, filing.filed,
                                            filing.source_url, status, detail))
+        if retrieval_failed:
+            warnings.append("One or more SEC filing documents could not be retrieved; "
+                            "network or provider access prevented a complete refresh.")
         report("Preparing statement rows and source records…")
         bundle = assemble_bundle(company, filings, facts, coverage, warnings)
         bundle.warnings = list(dict.fromkeys(bundle.warnings + inspect_bundle(bundle)))
@@ -322,4 +430,4 @@ class FinancialHistorian:
         if not bundle.raw_facts:
             # A coverage-only workbook is useful, but make its lack of values explicit.
             bundle.warnings.append("No financial values were extracted. This workbook contains filing links and coverage only.")
-        return bundle
+        return limit_statement_history(bundle, 20)

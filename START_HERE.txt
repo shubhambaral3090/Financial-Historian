@@ -1,27 +1,30 @@
-FINANCIAL HISTORIAN — WINDOWS 11
+FINANCIAL HISTORIAN — BROWSER WEB APP
 
-1. Extract the ZIP into a folder (do not launch from inside the ZIP).
-2. Use your installed Python 3.11 or newer; 3.12 and 3.14.6 passed app tests.
-   If Python is missing, install it from https://www.python.org/downloads/windows/
-   Select "Add Python to PATH" or install the Python launcher.
-3. Double-click launch_windows.cmd. First-time installation needs internet.
-4. In the browser, enter your name and contact email for SEC access.
-   The app remembers these locally. No account, API key or subscription is needed.
-5. Search for a company, click its result, prepare the workbook, then download it.
+1. Extract All from the ZIP into a folder you can write to.
+   Keep all files together; do not launch inside the ZIP.
+2. Use installed Python >=3.12 and <4.
+   Python 3.12, 3.13 and 3.14.6 are tested; future versions need compatible wheels.
+3. Double-click launch_windows.cmd. First launch needs internet to check and
+   install dependencies. It does not silently install another Python version.
+4. Enter a real name and contact email in the centered browser dialog.
+   The SEC requires identifying contact for automated access. No API key,
+   account, subscription or payment is needed. Contact stays in this tab's
+   session, not project files. Browser session-restore settings apply.
+5. Search or select a company. Prices, charts, SEC statements and Excel load
+   automatically. Your next normal action is Download Excel workbook.
 
-Keep the launcher's window open while using the app. Ctrl+C stops it.
-Closing the browser does not stop the local server; close the launcher to stop it.
+Refresh the browser tab for new data checks. Failed providers do not hide the
+other section; cached results show original timestamps and warnings.
+The sidebar uses dated, manually maintained, incomplete ticker starter groups.
+Direct SEC search remains available beyond those suggestions.
 
-The browser presents the latest 20 fiscal periods for supported S&P 500 and
-Nasdaq-100 companies. It does not permanently archive the full universe.
-This cannot guarantee every statement line or complete lifetime history.
-Older paper reports, non-SEC archives and unsupported formats need manual review.
-Always read Sources & Coverage in the workbook before using figures in a model.
+Keep the launcher window open; Ctrl+C stops the web server. Closing the browser
+alone does not stop it. This is not an offline Windows application.
+The default server accepts connections only from your own computer.
 
-On first launch, enter a real SEC name and contact email in the centered dialog.
-This is required by SEC automated-access regulations and remains active for the
-current browser session by default. If available, the sidebar can refresh the
-supported S&P 500/Nasdaq-100 company suggestions and market data.
+Statements show at most 20 fiscal periods. Read Sources & Coverage and original
+SEC filings before using figures in a model. No forecasts or valuations are added.
 
-If there is a problem, download the diagnostic log in the app's sidebar.
-More detail is in README.md. Your local settings and logs are not in this ZIP.
+If an old .venv is incompatible, the launcher explains recovery without deleting
+it. Do not disable certificate verification to fix connection errors.
+README.md has details. Diagnostics never contain your SEC contact.

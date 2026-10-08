@@ -124,7 +124,7 @@ def test_blank_search_needs_no_sec_request():
 
 @pytest.mark.parametrize("query", ["1", "0000000001", "CIK 0000000001", "cik1"])
 def test_known_cik_resolves_older_issuer_even_without_current_ticker_listing(query):
-    client = FixtureClient({SUBMISSIONS: {"name": "Former Listed Company", "tickers": []}})
+    client = FixtureClient({SUBMISSIONS: {"cik": 1, "name": "Former Listed Company", "tickers": []}})
     assert historian(client).search_companies(query) == [
         Company("0000000001", "Former Listed Company", "")
     ]
@@ -185,7 +185,7 @@ def test_inaccessible_filing_retains_coverage_without_fabricating_values(monkeyp
                             {filing.source_url: SecAccessError("The requested SEC record is unavailable (404).")})
     monkeypatch.setattr(service, "parse_company_facts", lambda *_: [])
     bundle = historian(client).generate(COMPANY)
-    assert bundle.periods == []
+    assert bundle.periods == ["2023-12-31"]  # Discovered but unsupported periods stay visibly blank.
     assert bundle.raw_facts == []
     assert bundle.coverage[0].status == "unsupported"
     assert bundle.coverage[0].source_url == filing.source_url
@@ -279,3 +279,117 @@ def test_unexpected_programming_failure_is_not_reported_as_unsupported_filing(mo
     monkeypatch.setattr(service, "parse_filing_html", parse)
     with pytest.raises(TypeError, match="programming failure"):
         historian(client).generate(COMPANY)
+
+
+@pytest.mark.parametrize("actual", [2, "0000000002", None, "1.0", 0, "12345678901"])
+def test_direct_cik_search_rejects_mismatched_or_invalid_sec_identifier(actual):
+    client = FixtureClient({SUBMISSIONS: {"cik": actual, "name": "Wrong issuer", "tickers": []}})
+    with pytest.raises(SecAccessError, match="identifier"):
+        historian(client).search_companies("1")
+    assert not client.document_calls
+
+
+def test_yahoo_share_class_symbol_resolves_exact_sec_ticker_and_profile():
+    client = FixtureClient({
+        "https://www.sec.gov/files/company_tickers.json": {
+            "0": {"cik_str": 1, "title": "Directory name", "ticker": "BRK.B"},
+            "1": {"cik_str": 2, "title": "BRK-B named unrelated issuer", "ticker": "OTHER"}},
+        SUBMISSIONS: {"cik": "0000000001", "name": "SEC verified issuer", "tickers": ["BRK.A", "BRK.B"]}})
+    company = historian(client).resolve_company(Company("", "Untrusted market name", "BRK-B"))
+    assert company == Company("0000000001", "SEC verified issuer", "BRK.B")
+    assert not client.document_calls
+
+
+def test_ticker_name_substring_is_not_an_identity_match():
+    client = FixtureClient({"https://www.sec.gov/files/company_tickers.json": {
+        "0": {"cik_str": 1, "title": "ABC Holdings", "ticker": "ABCD"}}})
+    with pytest.raises(SecAccessError, match="unambiguously"):
+        historian(client).resolve_company(Company("", "Yahoo name", "ABC"))
+    assert len(client.json_calls) == 1
+
+
+def test_resolve_rejects_cik_ticker_cross_issuer_mismatch():
+    client = FixtureClient({SUBMISSIONS: {"cik": 1, "name": "Issuer One", "tickers": ["ONE"]}})
+    with pytest.raises(SecAccessError, match="not associated"):
+        historian(client).resolve_company(Company("1", "Ignored", "OTHER"))
+    assert not client.document_calls
+
+
+def test_cik_only_resolves_delisted_issuer_without_a_market_ticker():
+    client = FixtureClient({SUBMISSIONS: {"cik": 1, "name": "Former issuer", "tickers": []}})
+    assert historian(client).resolve_company(Company("1", "")) == Company("0000000001", "Former issuer")
+
+
+@pytest.mark.parametrize("cik", ["0", "0000000000", "1.0", "12345678901", "../1", "١"])
+def test_resolve_rejects_invalid_cik_without_network(cik):
+    client = FixtureClient()
+    with pytest.raises(ValueError, match="identifier"):
+        historian(client).resolve_company(Company(cik, "Invalid"))
+    assert not client.json_calls
+
+
+def test_historical_shard_must_belong_to_validated_company():
+    client = FixtureClient({SUBMISSIONS: {"filings": {"files": [{"name": "CIK0000000002-submissions-001.json"}]}}})
+    with pytest.raises(SecAccessError, match="historical-file"):
+        historian(client).annual_filings(COMPANY, lambda _: None)
+    assert len(client.json_calls) == 1
+
+
+def test_generate_retrieves_only_latest_twenty_period_documents_but_keeps_amendments_and_raw(monkeypatch, capture_assembly):
+    records = [filing_record(year, year - 1999) for year in range(2000, 2026)]
+    records.append(filing_record(2025, 99, "10-K/A"))
+    client = FixtureClient({SUBMISSIONS: {"filings": {"recent": columnar(records)}}, FACTS: {}})
+    raw = []
+
+    def structured(_, filings):
+        for filing in filings:
+            fact = observation(filing, extraction="companyfacts")
+            raw.append(service.replace(fact, end=filing.report_date, start=filing.report_date[:4] + "-01-01"))
+        return raw
+
+    monkeypatch.setattr(service, "parse_company_facts", structured)
+    monkeypatch.setattr(service, "parse_filing_html", lambda *_: [])
+    bundle = historian(client).generate(COMPANY)
+    assert len(client.document_calls) == 21  # Twenty periods plus the latest amendment.
+    assert len(bundle.filings) == 27
+    assert len(bundle.raw_facts) == 27
+    assert bundle.periods == [f"{year}-12-31" for year in range(2025, 2005, -1)]
+    outside = [item for item in bundle.coverage if item.status == "outside presentation window"]
+    assert len(outside) == 6
+    assert all(item.report_date < "2006-01-01" for item in outside)
+    assert all("not retrieved" in item.detail for item in outside)
+
+
+def test_unknown_fiscal_period_is_explicit_not_guessed_or_fetched(monkeypatch, capture_assembly):
+    records = [filing_record(2025, 1), dict(filing_record(2024, 2), reportDate="")]
+    client = FixtureClient({SUBMISSIONS: {"filings": {"recent": columnar(records)}}, FACTS: {}})
+    monkeypatch.setattr(service, "parse_company_facts", lambda *_: [])
+    monkeypatch.setattr(service, "parse_filing_html", lambda *_: [])
+    bundle = historian(client).generate(COMPANY)
+    assert len(client.document_calls) == 1
+    assert any("guessed period" in item.detail for item in bundle.coverage)
+
+
+def test_company_facts_mismatched_identifier_is_never_parsed(monkeypatch, capture_assembly):
+    client = FixtureClient({SUBMISSIONS: {"filings": {"recent": columnar([filing_record(2025, 1)])}},
+                            FACTS: {"cik": 2, "facts": {}}})
+    calls = []
+    monkeypatch.setattr(service, "parse_company_facts", lambda *args: calls.append(args) or [])
+    monkeypatch.setattr(service, "parse_filing_html", lambda *_: [])
+    bundle = historian(client).generate(COMPANY)
+    assert calls == []
+    assert any("identifier does not match" in warning for warning in bundle.warnings)
+
+
+def test_missing_primary_index_document_failure_is_a_failed_refresh(monkeypatch, capture_assembly):
+    record = filing_record(2025, 1, document="")
+    filing = service.FinancialHistorian._filings(columnar([record]), COMPANY.cik)[0]
+    source = filing.source_url.rsplit("/", 1)[0] + "/annual.htm"
+    index = (b'<table><tr><th>Type</th><th>Document</th><th>Seq</th></tr>'
+             b'<tr><td>10-K</td><td><a href="annual.htm">Annual</a></td><td>1</td></tr></table>')
+    client = FixtureClient({SUBMISSIONS: {"filings": {"recent": columnar([record])}}, FACTS: {}},
+                           {filing.source_url: index, source: SecAccessError("SEC unavailable")})
+    monkeypatch.setattr(service, "parse_company_facts", lambda *_: [])
+    bundle = historian(client).generate(COMPANY)
+    assert any(warning.startswith("One or more SEC filing documents could not be retrieved;")
+               for warning in bundle.warnings)

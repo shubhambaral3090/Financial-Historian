@@ -63,4 +63,4 @@ def test_entire_workflow_keeps_revisions_custom_tags_and_printed_cash_sign(monke
     assert capex.value == -20
     assert any(fact.value == 20_000_000 and fact.presentation_value == -20_000_000 for fact in bundle.raw_facts)
     assert capex.comment and '2026-02-01' in capex.comment.text
-    assert messages and 'all available' in messages[0]
+    assert messages and 'latest 20 fiscal periods' in messages[0]

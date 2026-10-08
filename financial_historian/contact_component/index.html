@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Private tab session</title></head>
+<body><script>
+"use strict";
+// No third-party script, analytics, cookies, URL parameters or persistent storage.
+const storageKey = "financial-historian.sec-contact.v1";
+const parentOrigin = window.location.origin;
+function send(type, extra = {}) {
+  window.parent.postMessage({isStreamlitMessage: true, type, ...extra}, parentOrigin);
+}
+let lastValue = "";
+window.addEventListener("message", event => {
+  if (event.source !== window.parent || event.origin !== parentOrigin ||
+      event.data.type !== "streamlit:render") return;
+  let contact = event.data.args.contact;
+  let storageAvailable = true;
+  try {
+    if (contact) sessionStorage.setItem(storageKey, JSON.stringify(contact));
+    else contact = JSON.parse(sessionStorage.getItem(storageKey) || "null");
+  } catch (_) { storageAvailable = false; }
+  if (!contact || typeof contact.name !== "string" || typeof contact.email !== "string") contact = null;
+  const value = {ready: true, contact, storageAvailable};
+  const serialized = JSON.stringify(value);
+  if (serialized !== lastValue) {
+    lastValue = serialized;
+    send("streamlit:setComponentValue", {value, dataType: "json"});
+  }
+  send("streamlit:setFrameHeight", {height: 0});
+});
+send("streamlit:componentReady", {apiVersion: 1});
+send("streamlit:setFrameHeight", {height: 0});
+</script></body></html>

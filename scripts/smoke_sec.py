@@ -18,22 +18,19 @@ def main() -> int:
     args = parser.parse_args()
     contact = os.environ.get("SEC_USER_AGENT", "")
     if not contact:
-        # Reuse private first-launch configuration without printing it.
-        import json
-        settings = Path(__file__).resolve().parents[1] / "data" / "settings.json"
-        try:
-            config = json.loads(settings.read_text(encoding="utf-8"))
-            contact = f"{config['contact_name']} {config['contact_email']}"
-        except (OSError, ValueError, KeyError, TypeError):
-            print("Configure your SEC contact in the app first, or set SEC_USER_AGENT privately.")
-            return 1
+        print("Set SEC_USER_AGENT privately for this optional live check. Browser-session contact is not stored in files.")
+        return 1
     try:
         service = FinancialHistorian(contact)
         companies = service.search_companies(args.ticker)
         if not companies:
             print("No matching SEC company was found.")
             return 1
-        company = next((c for c in companies if c.ticker.casefold() == args.ticker.casefold()), companies[0])
+        exact = [c for c in companies if c.ticker.upper().replace('.', '-') == args.ticker.upper().replace('.', '-')]
+        if len(exact) != 1:
+            print("No unique exact SEC ticker match was found.")
+            return 1
+        company = service.resolve_company(exact[0])
         bundle = service.generate(company, progress=print)
         data = build_workbook(bundle)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
