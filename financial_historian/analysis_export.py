@@ -115,6 +115,7 @@ def append_analysis(workbook, bundle, analysis: Analysis) -> dict:
     matrix("Historical Ratios",[r for r in analysis.rows if r.definition.group!="Return bridge"])
     matrix("Return Bridge",[r for r in analysis.rows if r.definition.group=="Return bridge"])
     matrix("Common Size",analysis.common_size)
+    matrix("Business Drivers",[r for r in analysis.rows if r.definition.group=="Business drivers"])
     inputs.freeze_panes = "E5"
     inputs.auto_filter.ref = f"A4:O{max(4,next_row-1)}"
     for col in range(1,16):

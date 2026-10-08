@@ -207,6 +207,18 @@ def test_universe_failure_does_not_block_direct_search(ui_file, monkeypatch):
     assert any("Direct SEC search still works" in item.value for item in app.warning)
 
 
+def test_learning_path_changes_do_not_reload_sources_or_replace_workbook(ui_file, monkeypatch):
+    monkeypatch.setenv("SEC_USER_AGENT", CONTACT)
+    app = choose_fixture(AppTest.from_file(str(ui_file)).run())
+    original = app.session_state["workbook"]
+    original_calls = FixtureHistorian.generate_calls
+    for path in ("Examine capital efficiency", "Understand per-share results", "Explore business drivers"):
+        next(item for item in app.selectbox if item.label == "Guided analysis").select(path).run()
+        assert not app.exception
+        assert app.session_state["workbook"] == original
+        assert FixtureHistorian.generate_calls == original_calls
+
+
 def test_twenty_period_preview_and_workbook_keep_all_raw_sources(ui_file, monkeypatch):
     monkeypatch.setenv("SEC_USER_AGENT", CONTACT)
     monkeypatch.setattr(FixtureHistorian, "periods", 25)

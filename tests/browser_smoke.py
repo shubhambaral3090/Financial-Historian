@@ -90,8 +90,11 @@ def run(chromium: str, output: Path, rich: bool = False) -> dict:
                 download_button = page.get_by_role("button", name="Download Excel workbook", exact=True)
                 expect(download_button).to_be_visible(timeout=20000)
                 expect(page.get_by_text("Research page ready",exact=True)).to_be_visible(timeout=20000)
+                expect(page.get_by_test_id("stApp")).to_have_attribute("data-test-script-state","notRunning",timeout=20000)
                 page.get_by_role("tab", name="Statements", exact=True).click()
+                expect(page.get_by_test_id("stApp")).to_have_attribute("data-test-script-state","notRunning",timeout=20000)
                 page.get_by_role("tab", name="Cash flow", exact=True).click()
+                expect(page.get_by_test_id("stApp")).to_have_attribute("data-test-script-state","notRunning",timeout=20000)
                 if not rich:
                     expect(page.locator(".statement-preview").filter(has_text="Capital expenditures")).to_be_visible()
                     expect(page.locator(".statement-preview").filter(has_text="Capital expenditures")).to_contain_text("(1.2)")
@@ -99,14 +102,30 @@ def run(chromium: str, output: Path, rich: bool = False) -> dict:
                     page.get_by_role("tab",name="Metrics & learning",exact=True).click()
                     expect(page.get_by_text("Learn as you analyse",exact=True)).to_be_visible()
                     expect(page.locator(".statement-preview:visible").filter(has_text="Operating margin")).to_contain_text("15.00%")
+                    expect(page.get_by_test_id("stApp")).to_have_attribute("data-test-script-state","notRunning",timeout=20000)
                     page.get_by_text("Learn as you analyse",exact=True).scroll_into_view_if_needed()
                     page.screenshot(path=str(output / f"{name}-learning.png"))
+                    path_picker=page.get_by_test_id("stSelectbox").filter(has_text="Guided analysis").get_by_role("combobox")
+                    for path_label,expected_label,expected_value in (
+                        ("Examine capital efficiency","ROIC — effective-tax, cash-deducted proxy","21.33%"),
+                        ("Understand per-share results","Diluted weighted shares change — same filing","-20.00%"),
+                        ("Explore business drivers","Retail revenue","50.00%"),
+                    ):
+                        path_picker.click()
+                        page.get_by_role("option",name=path_label,exact=True).click()
+                        table=page.locator(".statement-preview:visible").filter(has_text=expected_label)
+                        expect(table).to_contain_text(expected_value,timeout=15000)
+                        expect(page.get_by_test_id("stApp")).to_have_attribute("data-test-script-state","notRunning",timeout=20000)
+                        expect(page.get_by_role("tab",name="Metrics & learning",exact=True)).to_have_attribute("aria-selected","true")
                     page.get_by_role("tab",name="Schedules",exact=True).click()
                     expect(page.get_by_text("Historical supporting schedules",exact=True)).to_be_visible()
+                    expect(page.get_by_test_id("stApp")).to_have_attribute("data-test-script-state","notRunning",timeout=20000)
                     page.get_by_role("tab",name="Sources & checks",exact=True).click()
                     expect(page.get_by_text("Evidence and validation",exact=True)).to_be_visible()
+                    expect(page.get_by_test_id("stApp")).to_have_attribute("data-test-script-state","notRunning",timeout=20000)
                     page.get_by_role("tab",name="Overview",exact=True).click()
                     expect(page.get_by_text("Understand the history",exact=True)).to_be_visible()
+                    expect(page.get_by_test_id("stApp")).to_have_attribute("data-test-script-state","notRunning",timeout=20000)
                 for label in ("Prepare Excel download", "Refresh market data", "Refresh this company", "Refresh company universe"):
                     assert not page.get_by_role("button", name=label, exact=True).count()
                 body = page.locator("body").inner_text()
@@ -137,6 +156,9 @@ def run(chromium: str, output: Path, rich: bool = False) -> dict:
                     cached = load_workbook(BytesIO(content),data_only=True)
                     row = next(r for r in cached["Historical Ratios"] if str(r[0].value).startswith("Operating margin ["))
                     assert row[-1].value == 0.15
+                    row = next(r for r in cached["Historical Ratios"] if str(r[0].value).startswith("ROIC — effective-tax, cash-deducted proxy ["))
+                    assert abs(row[-1].value - 144/675) < 1e-12
+                    assert {"EBITDA & Capital","Operating KPIs","Business Drivers"} <= set(cached.sheetnames)
                 with ZipFile(BytesIO(content)) as archive:
                     assert not any(b"offline@example.invalid" in archive.read(member) for member in archive.namelist())
                 # Browser-side sessionStorage must survive an actual document

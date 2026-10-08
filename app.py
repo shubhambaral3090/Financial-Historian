@@ -271,7 +271,8 @@ def render_statements(bundle: StatementBundle) -> None:
     empty_periods = sorted(set(periods) - set(value_periods(bundle)))
     st.subheader("Statement preview")
     st.caption("Currency amounts in millions; per-share figures and share counts retain their reported units. Periods run oldest to newest, matching Excel. Scroll across for later years. A dash means unavailable.")
-    tabs = st.tabs(["Income statement", "Balance sheet", "Cash flow"])
+    tabs = st.tabs(["Income statement", "Balance sheet", "Cash flow"],
+                   key="statement_tabs", on_change="rerun")
     for index, statement in enumerate(STATEMENTS):
         with tabs[index]:
             rows = bundle.statements.get(statement, [])

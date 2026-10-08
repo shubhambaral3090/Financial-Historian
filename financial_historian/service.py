@@ -356,6 +356,14 @@ class FinancialHistorian:
         ]
         facts = []
         disclosures = []
+        from .operating_kpis import load_kpi_mappings
+        try:
+            kpi_mappings = load_kpi_mappings(company.cik)
+            if not kpi_mappings:
+                warnings.append("No reviewed operating-KPI mappings are configured for this company; subscriber, user and device metrics are unavailable rather than inferred.")
+        except (ValueError, OSError, TypeError):
+            kpi_mappings = ()
+            warnings.append("Operating-KPI configuration could not be validated. KPI extraction was skipped; SEC financial statements remain available.")
         facts_warning = ""
         try:
             report("Loading SEC structured financial data…")
@@ -398,7 +406,7 @@ class FinancialHistorian:
                     extracted = parse_filing_html(document, filing)
                     facts.extend(extracted)
                     from .disclosures import parse_disclosures
-                    disclosures.extend(parse_disclosures(document, filing))
+                    disclosures.extend(parse_disclosures(document, filing, kpi_mappings))
             except SecAccessError as exc:
                 problem = str(exc)
                 retrieval_failed = True

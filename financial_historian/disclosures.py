@@ -23,6 +23,15 @@ NOTE_TAGS = {
     "CommonStockholdersEquity": "Equity & Shares",
     "NetIncomeLossAvailableToCommonStockholdersBasic": "Equity & Shares",
     "InterestExpense": "Debt & Liquidity", "InterestExpenseNonOperating": "Debt & Liquidity",
+    "ProfitLoss": "EBITDA & Capital",
+    "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest": "EBITDA & Capital",
+    "IncomeTaxExpenseBenefit": "EBITDA & Capital",
+    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest": "EBITDA & Capital",
+    "PaymentsOfDividendsCommonStock": "Equity & Shares",
+    "CommonStockDividendsPerShareDeclared": "Equity & Shares",
+    "WeightedAverageNumberOfDilutedSharesOutstanding": "Equity & Shares",
+    "EarningsPerShareDiluted": "Equity & Shares",
+    "EarningsPerShareBasic": "Equity & Shares",
 }
 
 
@@ -53,7 +62,7 @@ def parse_company_disclosures(payload: dict, filings: list[Filing]) -> list[Fact
     return output
 
 
-def parse_disclosures(content: bytes, filing: Filing) -> list[Fact]:
+def parse_disclosures(content: bytes, filing: Filing, kpi_mappings=()) -> list[Fact]:
     if filing.form not in {"10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A"}:
         return []
     try:
@@ -91,6 +100,11 @@ def parse_disclosures(content: bytes, filing: Filing) -> list[Fact]:
         segment = dimensions and any("segment" in axis.lower() or "geograph" in axis.lower()
                                      or "product" in axis.lower() for axis, member in dimensions)
         group = "Revenue & Segments" if segment else NOTE_TAGS.get(local) if tag.startswith("us-gaap:") else None
+        kpi = next((entry for entry in kpi_mappings if entry.tag == tag
+                    and entry.period_type == ("annual" if start else "instant")
+                    and entry.unit == units.get(_attr(node, "unitref"))), None)
+        if kpi:
+            group = "Operating KPIs"
         if not group or not _valid_end(end, filing):
             continue
         if start and not _annual_duration(start, end) or not start and end not in annual:
@@ -106,7 +120,9 @@ def parse_disclosures(content: bytes, filing: Filing) -> list[Fact]:
         result.append(Fact(tag, _row_label(node, tag), unit, value, start, end,
                            filing.accession, filing.filed, filing.form, filing.source_url,
                            "Disclosure", "inline-note", section=group,
+                           row_role="kpi:" + tag if kpi else "",
                            context_id=context_id, dimensions=dimensions, decimals=_attr(node, "decimals"),
-                           selection_reason="Annual disclosure; member scopes are separate and not assumed additive. "
+                           selection_reason=(f"Reviewed KPI: {kpi.label}. Definition: {kpi.definition}. Mapping evidence: {kpi.source_url}; reviewed {kpi.verified_on}. " if kpi else "")
+                           + "Annual disclosure; member scopes are separate and not assumed additive. "
                            + ("Contractual maturity bucket at the reporting date, not realized cash flow." if "Maturit" in tag else "")))
     return result

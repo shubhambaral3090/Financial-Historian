@@ -53,7 +53,9 @@ def explain(row, periods):
 
 def render_analytics(bundle, render_statements):
     analysis = build_analysis(bundle)
-    overview,statements,schedules,metrics,sources = st.tabs(["Overview","Statements","Schedules","Metrics & learning","Sources & checks"])
+    overview,statements,schedules,metrics,sources = st.tabs(
+        ["Overview","Statements","Schedules","Metrics & learning","Sources & checks"],
+        key="research_tabs", on_change="rerun")
     with overview:
         st.subheader("Understand the history")
         st.write("Explore what the company reported, how the figures relate, and where the evidence comes from.")
@@ -61,16 +63,16 @@ def render_analytics(bundle, render_statements):
             st.info("No annual periods are available for historical analysis.")
         else:
             latest = analysis.periods[-1]
-            by_key = {r.definition.key:r for r in analysis.rows}
+            overview_metrics = {r.definition.key:r for r in analysis.rows}
             for column,key in zip(st.columns(3),("revenue_growth","operating_margin","ocf_capex")):
                 with column:
-                    row = by_key[key]
+                    row = overview_metrics[key]
                     item = row.cells[latest]
                     st.metric(row.definition.label,display_value(item))
                     st.caption(latest)
                     if item.value is None:
                         st.caption("Unavailable — see Metrics & learning for the input explanation.")
-            row = by_key[st.selectbox("Historical chart",["operating_margin","revenue_growth","ocf_margin","asset_turnover"],format_func=lambda k:by_key[k].definition.label,key="historical_chart")]
+            row = overview_metrics[st.selectbox("Historical chart",["operating_margin","revenue_growth","ocf_margin","asset_turnover","ebitda_margin","roic_proxy","diluted_shares_growth"],format_func=lambda k:overview_metrics[k].definition.label,key="historical_chart")]
             chart_data = []
             segment = 0
             previous = None
@@ -105,10 +107,13 @@ def render_analytics(bundle, render_statements):
     with metrics:
         st.subheader("Learn as you analyse")
         paths = {
-            "Understand profitability":({"Profitability","Returns","Return bridge","Growth"},"Start with reported revenue and margins, then inspect the asset base. The return bridge shows arithmetic contributions, not causes."),
+            "Understand profitability":({"Profitability","Returns","Return bridge","Growth","Earnings bridge"},"Start with reported revenue and margins, then inspect the asset base. EBITDA is a defined reconciliation, not cash flow; return contributions are arithmetic, not causes."),
             "Compare earnings with cash":({"Cash generation","Earnings and cash","Capital investment"},"Compare earnings and operating cash flow over several periods. Timing and working-capital movements can explain differences; inspect the cash-flow statement."),
             "Examine working capital":({"Working capital","Liquidity"},"Review receivables, inventory and trade payables together. Day measures use annual flows and average year-end balances, which can hide seasonality."),
             "Examine debt and liquidity":({"Debt","Liquidity"},"Inspect debt definitions, cash restrictions and interest expense before interpreting ratios. Reported maturities are not realized cash payments."),
+            "Examine capital efficiency":({"Capital efficiency","Earnings bridge"},"ROIC here is explicitly a proxy: reported effective tax, debt plus consolidated equity less all cash, and two-point average capital. Inspect its assumptions before comparing companies."),
+            "Understand per-share results":({"Shareholder analysis"},"Compare earnings, EPS and weighted share counts. Same-filing comparisons limit split-vintage mismatches; the growth gap does not prove buyback causation. Cash dividends differ from declared dividends."),
+            "Explore business drivers":({"Business drivers"},"Compare like-defined product, geographic and segment observations. Members can overlap. Operating KPIs require reviewed issuer-specific mappings; subscriptions are not unique customers."),
         }
         path = st.selectbox("Guided analysis",list(paths),key="learning_path")
         groups,guidance = paths[path]

@@ -57,6 +57,23 @@ def historian(client):
     return instance
 
 
+def test_invalid_kpi_registry_does_not_block_financial_retrieval(monkeypatch):
+    import financial_historian.operating_kpis as registry
+    def invalid(*args):
+        raise ValueError("private untrusted registry detail")
+    monkeypatch.setattr(registry, "load_kpi_mappings", invalid)
+    record=filing_record(2023,1)
+    client=FixtureClient({
+        SUBMISSIONS:{"filings":{"recent":columnar([record]),"files":[]}},
+        FACTS:{"cik":1,"facts":{}},
+    })
+    monkeypatch.setattr(service,"parse_filing_html",lambda content,filing:[observation(filing)])
+    result=historian(client).generate(COMPANY)
+    assert result.raw_facts
+    assert any("KPI configuration could not be validated" in warning for warning in result.warnings)
+    assert all("private untrusted" not in warning for warning in result.warnings)
+
+
 def observation(filing, statement=STATEMENTS[0], extraction="inline-xbrl"):
     return Fact("ex:ReportedValue", "Reported value", "USD", 123.0,
                 "2023-01-01", "2023-12-31", filing.accession, filing.filed,

@@ -5,10 +5,11 @@ to automatically load Yahoo market context, SEC annual statements, supporting
 schedules, historical calculations, explanations and a matching Excel workbook.
 Then choose **Download Excel workbook**.
 
-Version 0.5 presents up to **20 fiscal periods**. This is a research starting
+Version 0.6 presents up to **20 fiscal periods**, with 52 defined historical
+measures plus supported business-driver calculations. This is a research starting
 point, not a certified database, valuation model, or investment recommendation.
 Institutional acceptance remains pending independent live-filing verification.
-See [release evidence](docs/RELEASE_v0.5.md), [accounting specification](docs/SPEC_v0.5.md),
+See [release evidence](docs/RELEASE_v0.6.md), [metric specification](docs/SPEC_v0.6.md),
 [research methodology](docs/METHODOLOGY.md), and the
 [fictional example workbook](docs/examples/Fishtorian_Example.xlsx).
 
@@ -98,11 +99,14 @@ Historical calculations use this project's explicit definitions:
   instant, row role, section, context ID, dimensions and source decimals when supplied. Older raw facts remain here.
 - **Sources & Coverage / Read Me:** 20-period policy, blanks, omitted/unsupported
   data, selection rules, warnings and original source links.
-- **Six supporting schedules:** Revenue & Segments, Working Capital, Debt &
-  Liquidity, Capital & PP&E, Earnings & Cash, and Equity & Shares. These group
+- **Supporting schedules:** Revenue & Segments, Working Capital, Debt &
+  Liquidity, Capital & PP&E, Earnings & Cash, Equity & Shares, EBITDA & Capital,
+  and Operating KPIs. These group
   supported reported observations; they do not invent complete roll-forwards.
 - **Historical Ratios / Return Bridge / Common Size:** descriptive calculations
   from compatible inputs. No future columns, recommendations or composite scores.
+- **Business Drivers:** supported same-filing segment/KPI growth and matching
+  consolidated-revenue shares; members are not assumed exhaustive or additive.
 - **Methodology / Calculation Inputs / Validation:** definitions, an inspectable
   dependency graph, source evidence, and passed/discrepancy/insufficient-information/
   not-applicable checks.
@@ -119,8 +123,30 @@ is enabled; editing formulas or inputs requires a compatible spreadsheet applica
 
 Overview, Statements, Schedules, Metrics & learning, and Sources & checks provide
 progressively deeper views. Guided paths explain profitability, cash generation,
-working capital and debt. Each metric has a formula, interpretation limitations,
+working capital, debt, capital efficiency, per-share results and business drivers.
+Each metric has a formula, interpretation limitations,
 company-specific worked inputs, and filing evidence.
+
+Version 0.6 adds reconciled EBITDA and margin, debt/EBITDA and EBITDA/interest,
+debt/capital and equity/assets, effective tax, an explicitly labelled ROIC proxy,
+earnings/EPS/share-count changes, dividend payout measures, cash repurchases and
+common distributions, and margin changes in percentage points. No Morningstar
+figures or proprietary definitions are imported. EBITDA is not cash flow or
+covenant EBITDA. ROIC uses a reported-effective-tax and all-cash-deducted capital
+proxy; it is not a precise operating-tax allocation or a reproduction of Morningstar.
+
+EPS/share-count and segment growth require same-filing comparative evidence.
+Missing common-dividend, consolidated-equity, pretax, D&A or debt-total facts can
+leave new measures unavailable even when other financial data is present. The
+app does not treat absent preferred/minority interests, investments or debt as zero.
+
+Operating-KPI support is configuration-driven, **not automatic universal coverage**.
+The reviewed registry [config/operating_kpis.json](config/operating_kpis.json) starts
+empty: no real-issuer tag mapping was verified in this release. Administrators can
+add exact CIK/tag/unit/period definitions only after source review. See
+[KPI mapping instructions](docs/OPERATING_KPIS.md). Invalid configuration skips KPIs
+with a coverage note and does not block financial retrieval. No user/device counts,
+ARPU or recurring revenue are inferred from prose.
 
 Industrial-company methods require a known nonfinancial SEC SIC. Unknown SICs,
 financial firms, missing components, unlike currencies, differing duration starts,
@@ -193,8 +219,8 @@ bash scripts/setup_cloud.sh
 The setup script installs development dependencies, checks them and runs the
 offline suite. On Windows, use `.venv\Scripts\python.exe -m pytest -q` after
 installing `requirements-dev.txt`; the launcher installs runtime packages only.
-See [the technical specification](docs/SPEC_v0.5.md) and
-[release validation evidence](docs/RELEASE_v0.5.md) for tested versus blocked capabilities.
+See [the metric specification](docs/SPEC_v0.6.md) and
+[release validation evidence](docs/RELEASE_v0.6.md) for tested versus blocked capabilities.
 
 Network hosts include `www.sec.gov`, `data.sec.gov`, PyPI package hosts,
 `query1.finance.yahoo.com`, `query2.finance.yahoo.com`, `fc.yahoo.com`,

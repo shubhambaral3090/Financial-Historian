@@ -1,7 +1,7 @@
 # Validation record — v0.4.0
 
 Historical record. Current Fishtorian validation and outstanding acceptance gates
-are in [RELEASE_v0.5.md](RELEASE_v0.5.md).
+are in [RELEASE_v0.6.md](RELEASE_v0.6.md).
 
 Validated October 7, 2026 (America/Indianapolis). Provider timestamps in the
 application are explicitly labeled UTC or their exchange timezone.

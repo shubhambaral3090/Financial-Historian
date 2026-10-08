@@ -1,6 +1,7 @@
 # Fishtorian historical methodology
 
-The exact formulas and workbook schemas are in [SPEC_v0.5.md](SPEC_v0.5.md).
+The base formulas and workbook schemas are in [SPEC_v0.5.md](SPEC_v0.5.md);
+new v0.6 metric definitions are in [SPEC_v0.6.md](SPEC_v0.6.md).
 The workbook's Methodology and Calculation Inputs tabs record the actual
 definitions and dependencies used for that company. A blank is not zero.
 
@@ -36,6 +37,45 @@ Common ROE requires common earnings and common equity, not consolidated substitu
 Industrial measures are withheld for unknown SICs and SIC 6000–6999. This is a
 conservative gate, not a complete industry-specific analytical framework.
 
+## v0.6: EBITDA, capital, shareholders and business drivers
+
+EBITDA is calculated as consolidated NI + income tax expense + separately
+reported interest expense + reported depreciation/depletion/amortization. First,
+NI + tax must reconcile to continuing pretax income within source rounding.
+This helps reject discontinued-operation/scope mismatches; it does not certify
+the complete accounting classification. Other nonoperating income remains in
+this definition; it is not operating income plus D&A or issuer adjusted EBITDA.
+No SBC, restructuring or other discretionary addbacks are made. Its exact inputs,
+reconciliation and cached formulas appear in EBITDA & Capital and Calculation Inputs.
+
+The ROIC **proxy** uses operating income × (1 − reported effective tax rate),
+divided by the two-point average of debt incl. finance leases + consolidated equity
+incl. NCI − cash equivalents. A consolidated effective tax rate is not an operating
+tax allocation. Deducting all cash is not estimating excess cash. The method does
+not subtract investments or capitalize operating leases, nor does it implement
+NOA/NFO/RNOA. It is named as a proxy in every primary view. Invalid tax rates,
+nonpositive capital, missing opening balances and unsuitable industries are withheld.
+
+Per-share growth requires exact-tag same-filing comparative observations instead
+of silently joining different split vintages. EPS-minus-common-earnings growth is
+only a percentage-point difference, not an exact or causal buyback decomposition.
+Cash common dividends, declared common DPS, repurchase cash and authorization
+balances are distinct concepts. Generic total dividends do not replace missing
+common dividends in common-shareholder payout calculations.
+
+Segment mix uses an exact recognized revenue concept matching the consolidated
+denominator and source vintage. Members may overlap: displaying ratios never
+establishes that they sum to 100%. Growth requires the same exact tag/axis/member
+in a same-filing annual comparative; renamed members are not stitched. Acquisitions
+or changed business composition can still affect growth. Operating KPIs require
+reviewed exact issuer mappings with documented definitions; subscriptions, users,
+devices and revenue are not interchanged.
+
+The supplied July 2021 Morningstar Apple report motivated this metric inventory,
+not source values or proprietary valuation logic. Its two differing EBITDA series
+and repeated zero EV/EBITDA entries are reasons to preserve definitions and flag
+unresolved data, not copy the printed numbers into this application's history.
+
 ## Research: adopted ideas versus unimplemented empirical models
 
 | Supplied research | Application and boundary |
@@ -60,7 +100,8 @@ at an historical date, not realized payments or app-generated projections.
 
 Structured validation checks reported assets against reported liabilities and
 equity, supported beginning/change/ending cash reconciliations with distinct
-restricted-cash scopes, and the operating-return bridge. Status is passed,
+restricted-cash scopes, NI-plus-tax against continuing pretax income, and the
+operating-return bridge. Status is passed,
 discrepancy, insufficient information, or not applicable. Legacy statement-quality
 warnings remain alongside these checks. Passing does not establish an audit.
 
@@ -73,4 +114,4 @@ exports carry supporting records; bounded runtime caches are not a professional'
 record-retention policy. Users must retain required evidence in their own workflow.
 Historical ratios imply neither causation nor future performance nor investment merit.
 
-See [release evidence and acceptance gaps](RELEASE_v0.5.md) before professional use.
+See [release evidence and acceptance gaps](RELEASE_v0.6.md) before professional use.

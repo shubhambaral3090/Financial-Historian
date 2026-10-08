@@ -1,4 +1,4 @@
-FISHTORIAN — BROWSER WEB APP
+FISHTORIAN v0.6 — BROWSER WEB APP
 
 1. Extract All from the ZIP into a folder you can write to.
    Keep all files together; do not launch inside the ZIP.
@@ -27,6 +27,9 @@ Statements show at most 20 fiscal periods. Read Sources & Coverage and original
 SEC filings before using figures in a model. No forecasts or valuations are added.
 Metrics & learning explains formulas, inputs, and limitations. Missing data is not
 zero. Independent live-filing acceptance is pending; this is not a certified database.
+New historical metrics include reconciled EBITDA, leverage, per-share growth and
+a labelled ROIC proxy. Open Metrics & learning for definitions and missing-input
+reasons. Subscriber/device KPIs need reviewed issuer mappings; none are assumed.
 
 If an old .venv is incompatible, the launcher explains recovery without deleting
 it. Do not disable certificate verification to fix connection errors.

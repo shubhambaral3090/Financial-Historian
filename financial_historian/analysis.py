@@ -112,6 +112,12 @@ DEFINITIONS = [
     definition("interaction", "Margin/turnover interaction", "Return bridge", "(Current margin − prior margin) × (current turnover − prior turnover)", "pp", "Interaction needed to reconcile the change exactly.", "Includes simultaneous changes; does not establish a cause.", True, "Fairfield & Yohn (2001), p. 375; total-assets adaptation."),
 ]
 
+from .extended_metrics import definitions as extended_definitions
+
+_EXTENDED_DEFINITIONS = extended_definitions(definition)
+EXTENDED_KEYS = {item.key for item in _EXTENDED_DEFINITIONS}
+DEFINITIONS.extend(_EXTENDED_DEFINITIONS)
+
 # Exact mappings; no fuzzy labels or company-name guessing.
 EXTRA_TAGS = {
     "net_income_total": (P, {"us-gaap:ProfitLoss"}),
@@ -120,15 +126,26 @@ EXTRA_TAGS = {
     "interest": (P, {"us-gaap:InterestExpense", "us-gaap:InterestExpenseNonOperating"}),
     "debt_total": (B, {"us-gaap:DebtAndCapitalLeaseObligations"}),
     "ppe_gross": (B, {"us-gaap:PropertyPlantAndEquipmentGross"}),
+    "pretax_continuing": (P, {"us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"}),
+    "tax_total": (P, {"us-gaap:IncomeTaxExpenseBenefit"}),
+    "da_total": (C, {"us-gaap:DepreciationDepletionAndAmortization"}),
+    "consolidated_equity": (B, {"us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"}),
+    "common_dividend_cash": (C, {"us-gaap:PaymentsOfDividendsCommonStock"}),
+    "declared_common_dps": (P, {"us-gaap:CommonStockDividendsPerShareDeclared"}),
+    "eps_basic": (P, {"us-gaap:EarningsPerShareBasic"}),
+    "eps_diluted": (P, {"us-gaap:EarningsPerShareDiluted"}),
+    "shares_diluted": (P, {"us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding"}),
 }
 
 SCHEDULE_KEYS = {
     "Revenue & Segments": {"revenue", "net_sales", "contract_revenue", "gross_profit", "operating_income"},
     "Working Capital": {"receivables", "nontrade_receivables", "inventory", "payables", "other_current_assets", "other_current_liabilities", "current_assets", "current_liabilities", "deferred_revenue_current"},
     "Debt & Liquidity": {"cash", "marketable_current", "short_term_investments", "marketable_noncurrent", "debt_current", "debt_noncurrent", "commercial_paper", "debt_total", "interest", "interest_paid", "debt_issuance", "debt_repayment"},
-    "Capital & PP&E": {"ppe", "ppe_gross", "capex", "depreciation"},
-    "Earnings & Cash": {"net_income", "net_income_total", "cfo", "cfo_continuing", "depreciation", "stock_compensation", "receivables_change", "inventory_change", "payables_change", "capex"},
-    "Equity & Shares": {"equity", "equity_including_nci", "common_equity", "common_income", "shares_basic", "shares_diluted", "eps_basic", "eps_diluted", "dividends", "repurchases", "stock_compensation", "retained_earnings", "treasury_stock"},
+    "Capital & PP&E": {"ppe", "ppe_gross", "capex", "depreciation", "da_total"},
+    "Earnings & Cash": {"net_income", "net_income_total", "cfo", "cfo_continuing", "depreciation", "da_total", "stock_compensation", "receivables_change", "inventory_change", "payables_change", "capex"},
+    "Equity & Shares": {"equity", "equity_including_nci", "consolidated_equity", "common_equity", "common_income", "shares_basic", "shares_diluted", "eps_basic", "eps_diluted", "dividends", "declared_common_dps", "common_dividend_cash", "repurchases", "stock_compensation", "retained_earnings", "treasury_stock"},
+    "EBITDA & Capital": {"net_income_total", "pretax_continuing", "tax_total", "interest", "da_total", "debt_total", "consolidated_equity", "cash"},
+    "Operating KPIs": set(),
 }
 
 
@@ -158,7 +175,7 @@ def combine(label: str, period: str, unit: str, formula: str, args: tuple[Datum,
             denominator: Datum | None = None, positive_denominator: bool = True) -> Datum:
     problems = [f"{a.label}: {a.reason or 'unavailable'}" for a in args if a.value is None]
     sources = tuple(dict.fromkeys(f for a in args for f in a.sources))
-    if len({f.unit for f in sources if currency(f.unit)}) > 1:
+    if len({f.unit.split("/")[0] for f in sources if currency(f.unit.split("/")[0])}) > 1:
         problems.append("Inputs have different currencies; no conversion is assumed.")
     for end in {f.end for f in sources}:
         group = [f for f in sources if f.end == end]
@@ -247,7 +264,7 @@ class Calculator:
         return missing("Revenue", period, "No unambiguous consolidated revenue basis is available.")
 
     def prior(self, period: str) -> str | None:
-        available = set(self.periods) | {f.end for f in self.bundle.raw_facts}
+        available = set(self.periods) | {f.end for f in self.bundle.raw_facts} | {f.end for f in self.bundle.disclosures}
         before = [p for p in available if p < period and 300 <= (date.fromisoformat(period) - date.fromisoformat(p)).days <= 400]
         return max(before, default=None)
 
@@ -279,6 +296,9 @@ class Calculator:
         return item
 
     def _metric(self, d: Definition, p: str) -> Datum:
+        if d.key in EXTENDED_KEYS:
+            from .extended_metrics import calculate
+            return calculate(self, d, p)
         get = lambda k: self.get(k, p)
         r = self.revenue(p)
         def calc(formula, args, fn, denom=None):
@@ -399,7 +419,9 @@ def build_analysis(bundle: StatementBundle) -> Analysis:
             local = re.sub(r"(?:Axis|Member)$","",local)
             return re.sub(r"(?<=[a-z])(?=[A-Z])"," ",local)
         label = sample.label + (" · " + "; ".join(f"{readable(a)}: {readable(m)}" for a,m in dimensions) if dimensions else " · note disclosure")
-        d = definition("note:"+str(len(schedules[group])),label,group,"Reported disclosure",unit,"Annual note disclosure with explicit context.","Dimensions are not assumed additive. Maturity buckets are contractual as-of disclosures.")
+        d = definition("note:"+str(len(schedules[group])),label,group,"Reported disclosure",unit,
+                       sample.selection_reason if group == "Operating KPIs" else "Annual note disclosure with explicit context.",
+                       "Dimensions are not assumed additive. Maturity buckets are contractual as-of disclosures.")
         cells = {}
         for p in engine.periods:
             candidates = values.get(p,[])
@@ -407,12 +429,19 @@ def build_analysis(bundle: StatementBundle) -> Analysis:
             selected = [f for f in candidates if (f.filed,f.accession)==latest]
             cells[p] = source_datum(max(selected, key=lambda f: (bool(f.context_id), bool(f.decimals)))) if selected and len({(f.value,f.start) for f in selected})==1 else missing(label,p,"No unambiguous annual disclosure.",unit)
         schedules[group].append(AnalysisRow(d,cells))
+    from .business_metrics import build_business_metrics
+    rows.extend(build_business_metrics(engine, schedules))
+    schedules["EBITDA & Capital"].extend(row for row in rows if row.definition.group in {"Earnings bridge", "Capital efficiency"})
     checks = validation_checks(engine)
     notes = [
         "Historical calculations only. No forecast, valuation, recommendation or CFA certification.",
         "Revenue basis is selected in order: total revenue, net sales, customer-contract revenue. Growth requires unchanged scope. Inspect every calculation's inputs.",
         "Cash-flow movements and balance-sheet changes are different measures. Schedule groupings do not imply complete roll-forwards.",
         "Advanced NOA/NFO and after-tax RNOA are unavailable without complete operating/financing classifications and tax allocations; no assumptions are inserted.",
+        "ROIC is a labelled historical proxy using the reported effective tax rate and debt + consolidated equity − all cash; it is not operating-tax allocation, Morningstar ROIC or NOA/RNOA.",
+        "EBITDA requires consolidated NI + tax to reconcile to continuing pretax income. No SBC or exceptional-item addbacks. EBITDA is not cash flow or covenant EBITDA.",
+        "Per-share and business-driver growth require same-filing comparatives; missing split or segment-definition evidence is not guessed.",
+        "Operating KPIs require reviewed company-specific mappings. No subscriber, active-device or user counts are inferred from revenue or report prose.",
         "Peer comparability scoring is not implemented. The De Franco measure needs a separate quarterly earnings/return design.",
         "Institutional acceptance pending independent live-filing verification across representative companies; passed checks are not an audit.",
     ]
@@ -425,6 +454,7 @@ def validation_checks(engine: Calculator) -> list[Check]:
     checks = []
     for p in engine.periods:
         specs = [
+            ("NI plus tax versus continuing pretax income",tuple(engine.get(k,p) for k in ("net_income_total","tax_total","pretax_continuing")),"{0}+{1}-{2}",lambda a,b,c:a+b-c),
             ("Assets versus reported liabilities and equity",(engine.get("assets",p),engine.get("liabilities_and_equity",p)),"{0}-{1}",lambda a,b:a-b),
             ("Cash movement — cash equivalents",tuple(engine.get(k,p) for k in ("cash_end","cash_begin","cash_change")),"{0}-{1}-{2}",lambda a,b,c:a-b-c),
             ("Cash movement — including restricted cash",tuple(engine.get(k,p) for k in ("restricted_cash_end","restricted_cash_begin","restricted_cash_change")),"{0}-{1}-{2}",lambda a,b,c:a-b-c),
