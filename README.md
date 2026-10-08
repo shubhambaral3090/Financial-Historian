@@ -2,7 +2,7 @@
 
 A private, local Python application for researching the annual financial history of U.S. public companies. Search by company name, ticker, or SEC CIK, then download an Excel workbook containing available annual statements and their SEC sources.
 
-The browser interface uses a clean, light layout with company search, a single changing progress message, and a prominent Excel download. The app connects to public SEC endpoints and does not require a paid subscription or API key.
+The browser interface uses a clean, light layout with company search, a company research page, optional Yahoo Finance market context, a single changing progress message, and a prominent Excel download. The app connects to public SEC endpoints and does not require a paid SEC subscription or API key.
 
 ![Financial Historian interface with demonstration data](docs/interface-preview.png)
 
@@ -14,7 +14,7 @@ The browser interface uses a clean, light layout with company search, a single c
 2. Download or clone this repository and extract it into a folder you can write to.
 3. Double-click **launch_windows.cmd**. The first launch creates `.venv` and installs the pinned dependencies; this requires internet access. Subsequent launches reuse the environment unless requirements change.
 4. Enter your real name or organization and contact email in the sidebar. The SEC requires an identifying contact in automated requests. These details are saved locally in `data/settings.json`; they are not an account or API key.
-5. Search, select a company, choose **Prepare Excel download**, then **Download Excel workbook**.
+5. Search, select a company, optionally refresh market data, choose **Prepare Excel download**, then **Download Excel workbook**.
 
 Keep the launcher window open while using the application. Press **Ctrl+C** in that window to stop it. If the browser does not open automatically, enter `127.0.0.1:8501` in your browser. The server binds to the loopback interface so other machines cannot connect to it by default.
 
@@ -24,7 +24,7 @@ The launcher uses the default installed Python selected by `py` (or `python` if 
 
 ## Historical coverage and financial interpretation
 
-There is **no configured year limit**. The app attempts all annual history available through its supported SEC sources. This does not guarantee 50 years of data, a complete company's lifetime, or every original statement line item.
+The web application presents the latest **20 fiscal periods** for supported companies. It does not permanently archive the entire supported universe. SEC discovery and raw source records remain auditable during generation, while the statement presentation applies the 20-period window. This does not guarantee a complete company's lifetime or every original statement line item.
 
 Structured company facts are strongest in the XBRL era, generally around 2009 onward. Filing discovery can find earlier annual reports; supported machine-readable statements are inspected where possible. Older plain-text reports, scanned documents, inaccessible filings, and nonstandard layouts may need manual review. Filing coverage records identify what was attempted and what could not be extracted. A historical filing link is not evidence that all its figures were parsed.
 
@@ -43,7 +43,11 @@ The following folders are ignored by Git:
 
 Your configured contact is sent to the SEC in the HTTP user-agent header, as required by its access policy. The app makes requests for the company you select; it does not run a background archive or crawl every company. The diagnostic download contains sanitized session events and omits contact details. Do not publish your local settings file. Keep a local backup if you want to preserve settings when moving the app.
 
-You can provide an existing contact with the `SEC_USER_AGENT` environment variable instead of saving it through the sidebar. Supply a real identifying name and email; do not use invented contact details. When this variable is set, it takes precedence over local settings.
+You can provide an existing contact with the `SEC_USER_AGENT` environment variable instead of entering it in the first-launch dialog. Supply a real identifying name and email; do not use invented contact details. The dialog keeps the entered contact in the current browser session by default and does not write it to project files.
+
+## Market data
+
+The optional market panel uses Yahoo Finance through `yfinance` for historical daily prices and the latest available quote. Yahoo data is not guaranteed real-time. The interface labels the quote as “latest available close” or unavailable, shows its retrieval timestamp and timezone, and does not block SEC financial-statement retrieval when market data fails. Market requests use a bounded in-memory cache and are kept separate from SEC filing data. Company-universe suggestions are loaded on demand from the documented public S&P 500 and Nasdaq-100 directory pages and include the membership retrieval timestamp.
 
 ## Development
 

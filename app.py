@@ -16,7 +16,9 @@ import streamlit as st
 from financial_historian import __version__
 from financial_historian.export import CURRENCIES, build_workbook
 from financial_historian.models import STATEMENTS, Company, StatementBundle
-from financial_historian.service import FinancialHistorian
+from financial_historian.market import YahooFinanceProvider
+from financial_historian.service import FinancialHistorian, limit_statement_history
+from financial_historian.universe import UniverseProvider
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = ROOT / "data" / "settings.json"
@@ -74,31 +76,29 @@ def read_settings() -> tuple[dict, str]:
 
 
 def save_contact(name: str, email: str) -> None:
-    """Merge settings and replace atomically; never overwrite an unreadable file."""
+    """Keep the SEC contact in this session; it is not persisted by default."""
     try:
         f"{name} {email}".encode("latin-1")
     except UnicodeEncodeError:
         raise ValueError("Use a Latin-letter spelling of your name or organization and an ASCII contact email so the SEC contact can be sent in an HTTP header.") from None
-    config, problem = read_settings()
-    if problem:
-        raise ValueError(problem)
-    config.update({"contact_name": name, "contact_email": email})
-    SETTINGS.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=SETTINGS.parent, prefix="settings-", suffix=".tmp", delete=False) as handle:
-            json.dump(config, handle, indent=2)
-            handle.write("\n")
-            temporary = Path(handle.name)
-        os.replace(temporary, SETTINGS)
-    finally:
-        if temporary and temporary.exists():
-            temporary.unlink()
+    st.session_state["user_agent"] = f"{name.strip()} {email.strip()}"
+    st.session_state["contact_name"] = name.strip()
+    st.session_state["contact_email"] = email.strip()
 
 
 @st.cache_resource
 def get_service(user_agent: str) -> FinancialHistorian:
     return FinancialHistorian(user_agent=user_agent, cache_dir=ROOT / "data" / "cache")
+
+
+@st.cache_resource
+def get_universe() -> UniverseProvider:
+    return UniverseProvider()
+
+
+@st.cache_resource
+def get_market_provider() -> YahooFinanceProvider:
+    return YahooFinanceProvider()
 
 
 def explain_error(error: Exception) -> str:
@@ -193,7 +193,7 @@ def render_bundle(bundle: StatementBundle) -> None:
             )
 
     with st.expander("Coverage & notes"):
-        st.write("The search covers all available annual history, with no year limit. SEC electronic filings and supported formats may cover only part of a company's life.")
+        st.write("The search discovers available annual filings, while statement tabs present the latest 20 fiscal periods. SEC electronic filings and supported formats may cover only part of a company's life.")
         if empty_periods:
             st.write("**No extracted figures:** " + ", ".join(empty_periods))
         if bundle.coverage:
@@ -220,11 +220,9 @@ def render_bundle(bundle: StatementBundle) -> None:
 
 config, settings_problem = read_settings()
 environment_contact = os.environ.get("SEC_USER_AGENT", "").strip()
-saved_name = str(config.get("contact_name", "")).strip()
-saved_email = str(config.get("contact_email", "")).strip()
-saved_contact = f"{saved_name} {saved_email}" if saved_name and saved_email else ""
-st.session_state["user_agent"] = environment_contact or saved_contact
-user_agent = st.session_state["user_agent"]
+saved_name = str(st.session_state.get("contact_name", "")).strip()
+saved_email = str(st.session_state.get("contact_email", "")).strip()
+user_agent = environment_contact or str(st.session_state.get("user_agent", "")).strip()
 
 st.set_page_config(page_title="Financial Historian", page_icon="📄", layout="wide", initial_sidebar_state="collapsed" if user_agent else "expanded")
 st.markdown(
@@ -246,6 +244,8 @@ st.markdown(
     .brand { color: #35373b; font-size: 1rem; font-weight: 600; letter-spacing: -.02rem; }
     .welcome { max-width: 780px; margin: 3rem auto 1.6rem; text-align: center; }
     .welcome p { color: #686b70; line-height: 1.65; font-size: 1rem; max-width: 620px; margin: 0 auto; }
+    .contact-card { max-width: 760px; margin: 2rem auto 1rem; padding: 1.5rem 1.7rem; border: 1px solid #e5e7eb; border-radius: 14px; background: #f7f7f8; }
+    .contact-card p { color: #686b70; line-height: 1.55; margin-bottom: 0; }
     .company-name { color: #202123; font-size: 1.65rem; font-weight: 600; line-height: 1.3; margin: 1.8rem 0 .35rem; }
     .company-meta { color: #686b70; font-size: .9rem; margin-bottom: 1rem; }
     .statement-preview { overflow: auto; max-height: 520px; border: 1px solid #e5e7eb; border-radius: 10px; }
@@ -277,37 +277,25 @@ with st.sidebar:
     st.caption("Your local financial research workspace")
     st.divider()
     st.markdown("**SEC connection**")
-    if environment_contact:
-        st.caption("✓ Contact configured")
-    else:
-        with st.expander("Contact details" if user_agent else "Set up SEC access", expanded=not bool(user_agent)):
-            st.write("The SEC requires a real name and contact email for automated requests. No account or API key is needed.")
-            with st.form("contact_form"):
-                name = st.text_input("Your name or organization", value=saved_name, max_chars=120)
-                email = st.text_input("Contact email", value=saved_email, max_chars=200)
-                contact_submitted = st.form_submit_button("Save contact", width="stretch")
-            st.caption("Saved on this computer and sent only with SEC requests. Your contact is excluded from diagnostic downloads.")
-            if contact_submitted:
-                if not name.strip() or "\n" in name or "\r" in name:
-                    st.error("Enter your name or organization on one line.")
-                elif not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email.strip()):
-                    st.error("Enter a valid contact email.")
-                elif len(f"{name.strip()} {email.strip()}") > 250:
-                    st.error("Keep your name and email to 250 characters combined so the SEC contact fits its request header.")
-                else:
-                    try:
-                        save_contact(name.strip(), email.strip())
-                        record("contact_saved")
-                        st.rerun()
-                    except (OSError, ValueError) as error:
-                        st.error(sanitize(error))
-        if user_agent:
-            st.caption("✓ Contact saved locally")
+    st.caption("✓ Contact active for this session" if user_agent else "Contact is requested once per browser session")
+    with st.expander("Market suggestions"):
+        st.caption("Load the supported S&P 500 and Nasdaq-100 directory when you want suggestions.")
+        if st.button("Refresh company universe", width="stretch"):
+            try:
+                st.session_state["universe"] = get_universe().load()
+                record("universe_loaded", f"members={len(st.session_state['universe'])}")
+            except Exception as error:
+                st.error("The company universe could not be refreshed. " + sanitize(error))
+        for member in st.session_state.get("universe", [])[:8]:
+            if st.button(f"{member.company.ticker} · {member.company.name}", key=f"suggest_{member.company.cik}_{member.company.ticker}", width="stretch"):
+                st.session_state["selected_company"] = member.company
+                clear_workbook()
+                st.rerun()
     if settings_problem:
         st.warning(settings_problem)
     st.divider()
     with st.expander("About the data"):
-        st.write("All available annual history is searched, without a year limit. Each retrieved figure includes a source filing. Older and unsupported filings can leave gaps, which are recorded in the workbook.")
+        st.write("The app presents the latest 20 fiscal periods for supported S&P 500 and Nasdaq-100 companies. Each retrieved figure includes a source filing. Older and unsupported filings can leave gaps, which are recorded in the workbook.")
         st.caption("Latest eligible filed values · Original reported units · No forecasts or valuations")
     with st.expander("Help & diagnostics"):
         st.write("Use Extract All on the downloaded ZIP before opening launch_windows.cmd. Keep this browser tab open while a workbook is being prepared.")
@@ -322,6 +310,29 @@ with st.sidebar:
     st.caption(f"Local edition · v{APP_VERSION}")
 
 st.markdown('<div class="brand">Financial Historian</div>', unsafe_allow_html=True)
+if not user_agent:
+    st.markdown('<div class="contact-card"><h2>Connect to SEC data</h2><p>The SEC requires an identifying name and email for automated requests. No account or API key is needed. This contact stays active for this browser session and is not written to the project files.</p></div>', unsafe_allow_html=True)
+    with st.form("first_launch_contact"):
+        name_col, email_col = st.columns(2)
+        with name_col:
+            name = st.text_input("Your name or organization", max_chars=120)
+        with email_col:
+            email = st.text_input("Contact email", max_chars=200)
+        contact_submitted = st.form_submit_button("Continue to Financial Historian", type="primary", width="stretch")
+    if contact_submitted:
+        if not name.strip() or "\n" in name or "\r" in name:
+            st.error("Enter your name or organization on one line.")
+        elif not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email.strip()):
+            st.error("Enter a valid contact email.")
+        elif len(f"{name.strip()} {email.strip()}") > 250:
+            st.error("Keep your name and email to 250 characters combined.")
+        else:
+            try:
+                save_contact(name, email)
+                record("contact_session_started")
+                st.rerun()
+            except ValueError as error:
+                st.error(sanitize(error))
 if not st.session_state.get("selected_company"):
     st.markdown('<div class="welcome"><h1>Explore a company’s financial history</h1><p>Income statements, balance sheets, and cash flow — across all available annual filings, ready for Excel.</p></div>', unsafe_allow_html=True)
 else:
@@ -334,7 +345,7 @@ with st.form("company_search"):
         submitted = st.form_submit_button("Search companies", type="primary", width="stretch", disabled=not bool(user_agent))
 
 if not user_agent:
-    st.info("Add your SEC contact details in the sidebar to get started. You only need to do this once.")
+    st.info("Enter your SEC contact above to begin. The contact is used only for this browser session.")
 
 if submitted:
     if not search_query.strip():
@@ -368,6 +379,29 @@ if "results" in st.session_state and not st.session_state.get("selected_company"
 selected: Company | None = st.session_state.get("selected_company")
 if selected:
     st.markdown(f'<div class="company-name">{html.escape(selected.name)}</div><div class="company-meta">{html.escape(selected.ticker or "No current ticker")} · CIK {html.escape(selected.cik)}</div>', unsafe_allow_html=True)
+    if selected.ticker:
+        with st.container(border=True):
+            market_col, chart_col = st.columns([1, 2])
+            with market_col:
+                st.subheader("Market data")
+                st.caption("Yahoo Finance · latest available close")
+                if st.button("Refresh market data", key="refresh_market", width="stretch"):
+                    with st.spinner("Loading market data…"):
+                        st.session_state["market_quote"] = get_market_provider().quote(selected.ticker)
+                quote = st.session_state.get("market_quote")
+                if quote and quote.ticker == selected.ticker:
+                    if quote.price is None:
+                        st.warning("Market data temporarily unavailable. SEC financial statements remain available.")
+                    else:
+                        st.metric("Latest close", f"{quote.price:,.2f}", f"{quote.change:+,.2f} ({quote.change_percent:+.2f}%)" if quote.change is not None and quote.change_percent is not None else None)
+                        st.caption(f"Retrieved {quote.retrieved_at} · {quote.timezone} · {quote.status}")
+                else:
+                    st.info("Refresh to load the latest available market data.")
+            with chart_col:
+                if quote and quote.history:
+                    st.line_chart({"Close": {point.timestamp: point.close for point in quote.history}}, height=220)
+                else:
+                    st.caption("The price chart appears after market data is loaded.")
     if "bundle" not in st.session_state:
         st.write("Prepare all available annual history with source links for each figure.")
         st.caption("Large histories can take several minutes. Older filings may have gaps; the workbook explains what was retrieved.")
@@ -386,6 +420,7 @@ if selected:
                         record("retrieval_progress", message)
 
                     bundle = get_service(user_agent).generate(selected, progress=show_progress)
+                    bundle = limit_statement_history(bundle, 20)
                     show_progress("Building the Excel workbook…")
                     workbook = build_workbook(bundle, progress=show_progress)
                     st.session_state["bundle"] = bundle
@@ -406,6 +441,6 @@ if selected:
             clear_workbook()
             st.rerun()
 elif "results" not in st.session_state:
-    st.caption("All available years · Three annual statements · SEC sources included")
+    st.caption("Latest 20 fiscal periods · Three annual statements · SEC sources included")
 
 st.markdown('<div class="footer-note">Financial Historian runs on your computer. Review coverage and source filings before using figures in a model.</div>', unsafe_allow_html=True)

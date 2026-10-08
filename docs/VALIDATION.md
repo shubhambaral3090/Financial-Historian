@@ -59,6 +59,18 @@ from 26.29 seconds to 9.72 seconds in this environment. The smaller real uploade
 Apple dataset exported in approximately 3.9 seconds. Network retrieval time is
 separate and depends on SEC responses and the local cache.
 
+## Web research layer (0.3.0 development validation)
+
+The next web-only layer adds a refreshable S&P 500/Nasdaq-100 directory, a
+20-fiscal-period presentation limit that leaves raw facts intact, a session-only
+first-launch SEC contact flow, and a provider-isolated Yahoo Finance adapter.
+Market quotes are labelled latest available close/delayed, timestamped, and
+bounded by an in-memory cache; a market-data failure does not block SEC
+statements. Universe and market adapters are tested with injected offline
+fixtures, not live provider calls. Yahoo Finance is not represented as guaranteed
+real-time data. A permanent offline Windows product and a full-universe SEC
+archive remain explicitly out of scope.
+
 ## Launcher correction and Python 3.14.6
 
 The initial Windows launcher attempted an absent Python 3.12 and continued to

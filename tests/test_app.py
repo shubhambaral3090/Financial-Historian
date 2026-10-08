@@ -79,7 +79,7 @@ def test_first_run_requires_contact_without_network(ui_file):
     app = AppTest.from_file(str(ui_file)).run()
     assert not app.exception
     assert button(app, "Search companies").disabled
-    assert any("contact details" in entry.value for entry in app.info)
+    assert any("SEC contact" in entry.value for entry in app.info)
 
 
 def test_search_selection_generates_real_workbook_from_offline_fixture(ui_file, monkeypatch):
@@ -120,18 +120,19 @@ def test_failed_search_has_sanitized_error_and_diagnostics(ui_file, monkeypatch)
     assert "offline@example.invalid" not in error + diagnostics
 
 
-def test_save_contact_preserves_existing_configuration(ui_file):
+def test_contact_is_session_only_and_does_not_write_settings(ui_file):
     path = ui_file.parent / "data" / "settings.json"
     path.parent.mkdir()
     path.write_text(json.dumps({"existing_option": "preserve"}), encoding="utf-8")
     app = AppTest.from_file(str(ui_file)).run()
     input_field(app, "Your name or organization").input("Offline Fixture")
     input_field(app, "Contact email").input("offline@example.invalid")
-    button(app, "Save contact").click().run()
+    button(app, "Continue to Financial Historian").click().run()
     assert not app.exception
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved["existing_option"] == "preserve"
-    assert saved["contact_email"] == "offline@example.invalid"
+    assert "contact_email" not in saved
+    assert app.session_state["contact_email"] == "offline@example.invalid"
     assert not button(app, "Search companies").disabled
     assert "offline@example.invalid" not in "\n".join(app.session_state["diagnostics"])
 
@@ -147,24 +148,24 @@ def test_coverage_only_report_is_downloadable_and_explicit(ui_file, monkeypatch)
     assert app.metric[0].value == "0"
 
 
-def test_unreadable_settings_are_never_overwritten(ui_file):
+def test_unreadable_settings_do_not_block_session_contact(ui_file):
     path = ui_file.parent / "data" / "settings.json"
     path.parent.mkdir()
     path.write_text("broken-settings", encoding="utf-8")
     app = AppTest.from_file(str(ui_file)).run()
     input_field(app, "Your name or organization").input("Offline Fixture")
     input_field(app, "Contact email").input("offline@example.invalid")
-    button(app, "Save contact").click().run()
+    button(app, "Continue to Financial Historian").click().run()
     assert not app.exception
     assert path.read_text(encoding="utf-8") == "broken-settings"
-    assert app.error
+    assert app.session_state["contact_email"] == "offline@example.invalid"
 
 
 def test_overlong_combined_contact_is_rejected_before_save(ui_file):
     app = AppTest.from_file(str(ui_file)).run()
     input_field(app, "Your name or organization").input("x" * 120)
     input_field(app, "Contact email").input("y" * 120 + "@example.invalid")
-    button(app, "Save contact").click().run()
+    button(app, "Continue to Financial Historian").click().run()
     assert not app.exception
     assert any("250 characters" in entry.value for entry in app.error)
     assert not (ui_file.parent / "data" / "settings.json").exists()
@@ -174,7 +175,7 @@ def test_header_incompatible_name_is_rejected_before_save(ui_file):
     app = AppTest.from_file(str(ui_file)).run()
     input_field(app, "Your name or organization").input("東京")
     input_field(app, "Contact email").input("offline@example.invalid")
-    button(app, "Save contact").click().run()
+    button(app, "Continue to Financial Historian").click().run()
     assert not app.exception
     assert any("HTTP header" in entry.value for entry in app.error)
     assert not (ui_file.parent / "data" / "settings.json").exists()

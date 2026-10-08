@@ -18,6 +18,27 @@ ANNUAL_FORMS = {"10-K", "10-K/A", "10-K405", "10-K405/A", "10-KT", "10-KT/A",
                 "20-F", "20-F/A", "40-F", "40-F/A"}
 
 
+def limit_statement_history(bundle: StatementBundle, years: int = 20) -> StatementBundle:
+    """Limit displayed statement cells without deleting raw source facts.
+
+    Periods are fiscal period ends, not calendar years. Coverage and raw facts
+    remain complete so the workbook can explain what was discovered outside the
+    presentation window.
+    """
+    if not isinstance(years, int) or years < 1:
+        raise ValueError("History limit must be a positive integer.")
+    discovered = set(bundle.periods)
+    discovered.update(period for rows in bundle.statements.values() for row in rows for period in row.values)
+    available = sorted(discovered, reverse=True)
+    keep = set(available[:years])
+    for rows in bundle.statements.values():
+        for row in rows:
+            row.values = {period: fact for period, fact in row.values.items() if period in keep}
+    bundle.periods = sorted(keep, reverse=True)
+    bundle.warnings.append(f"Statement presentation is limited to the latest {years} fiscal periods; raw source records and filing coverage remain available for audit.")
+    return bundle
+
+
 def _archive_document_url(index_url: str, href: str, accession: str,
                           *, complete_submission: bool = False) -> str | None:
     """Accept files inside this accession, plus its listed complete submission.

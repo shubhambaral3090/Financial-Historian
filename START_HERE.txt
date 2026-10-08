@@ -12,10 +12,16 @@ FINANCIAL HISTORIAN — WINDOWS 11
 Keep the launcher's window open while using the app. Ctrl+C stops it.
 Closing the browser does not stop the local server; close the launcher to stop it.
 
-There is no fixed year limit. All discoverable annual SEC filings are attempted.
-This is an initial version: it cannot guarantee every statement line or 50+ years.
+The browser presents the latest 20 fiscal periods for supported S&P 500 and
+Nasdaq-100 companies. It does not permanently archive the full universe.
+This cannot guarantee every statement line or complete lifetime history.
 Older paper reports, non-SEC archives and unsupported formats need manual review.
 Always read Sources & Coverage in the workbook before using figures in a model.
+
+On first launch, enter a real SEC name and contact email in the centered dialog.
+This is required by SEC automated-access regulations and remains active for the
+current browser session by default. If available, the sidebar can refresh the
+supported S&P 500/Nasdaq-100 company suggestions and market data.
 
 If there is a problem, download the diagnostic log in the app's sidebar.
 More detail is in README.md. Your local settings and logs are not in this ZIP.
