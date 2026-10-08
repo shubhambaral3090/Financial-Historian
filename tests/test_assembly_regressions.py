@@ -35,7 +35,7 @@ def test_html_and_renamed_revenue_tags_form_one_continuous_source_preserving_row
     bundle = assemble(inputs)
     assert len(bundle.statements[P]) == 1
     row = bundle.statements[P][0]
-    assert row.label == "Revenue"
+    assert row.label == "Net sales"
     assert row.is_total
     assert set(row.values) == {"2009-09-30", "2016-09-30", "2019-09-30"}
     assert row.accepted_tags == {entry.tag for entry in inputs}

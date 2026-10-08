@@ -31,18 +31,27 @@ def limit_statement_history(bundle: StatementBundle, years: int = 20) -> Stateme
     discovered = {filing.report_date for filing in bundle.filings if _valid_period(filing.report_date)}
     discovered.update(bundle.periods)
     discovered.update(period for rows in bundle.statements.values() for row in rows for period in row.values)
+    observed_ends = {p for rows in bundle.statements.values() for row in rows for p in row.values}
+    unsupported = {c.report_date for c in bundle.coverage if c.status == "unsupported"}
+    excluded = {p for p in discovered - observed_ends if p in unsupported and _valid_period(p)
+                and any(0 < abs((date.fromisoformat(p) - date.fromisoformat(o)).days) < 120
+                        for o in observed_ends if _valid_period(o))}
+    discovered -= excluded
     available = sorted(discovered, reverse=True)
     keep = set(available[:years])
     statements = {
         statement: [replace(row, values={period: fact for period, fact in row.values.items()
                                         if period in keep}, accepted_tags=set(row.accepted_tags))
-                    for row in rows]
+                    for row in rows if set(row.values) & keep]
         for statement, rows in bundle.statements.items()
     }
     warnings = [warning for warning in bundle.warnings
                 if not warning.startswith(("Statement presentation is limited to the latest ",
                                            "No verified statement observations are available for fiscal period"))]
     warnings.append(f"Statement presentation is limited to the latest {years} fiscal periods; raw source records and filing coverage remain available for audit.")
+    if excluded:
+        warnings.append("Unsupported metadata dates within 120 days of an observed annual end were excluded from annual columns: "
+                        + ", ".join(sorted(excluded)) + ". Heuristic exclusion; original filing coverage remains available.")
     observed = {period for rows in statements.values() for row in rows for period in row.values}
     empty = sorted(keep - observed, reverse=True)
     if empty:
@@ -248,7 +257,8 @@ class FinancialHistorian:
                                  "Search by company name or CIK to verify the issuer.")
         official = next((value for value in official_tickers if normalize_ticker(value) == ticker),
                         official_tickers[0] if official_tickers else "")
-        return Company(cik, name.strip(), official)
+        sic = str(payload.get("sic", ""))
+        return Company(cik, name.strip(), official, sic if re.fullmatch(r"\d{4}", sic) else "")
 
     @staticmethod
     def _filings(block: dict, cik: str) -> list[Filing]:
@@ -345,6 +355,7 @@ class FinancialHistorian:
             "Blank cells mean unavailable observations, never zero. Fiscal-year and accounting changes require analyst review.",
         ]
         facts = []
+        disclosures = []
         facts_warning = ""
         try:
             report("Loading SEC structured financial data…")
@@ -352,11 +363,13 @@ class FinancialHistorian:
                 f"https://data.sec.gov/api/xbrl/companyfacts/CIK{company.cik.zfill(10)}.json", refresh=True)
             _validate_submissions(payload, company.cik.zfill(10))
             facts.extend(parse_company_facts(payload, filings))
+            from .disclosures import parse_company_disclosures
+            disclosures.extend(parse_company_disclosures(payload, filings))
         except SecAccessError as exc:
             facts_warning = f"Structured company-facts data could not be loaded: {exc}"
             warnings.append(facts_warning)
         selected_periods = set(sorted({filing.report_date for filing in filings
-                                      if _valid_period(filing.report_date)}, reverse=True)[:20])
+                                      if _valid_period(filing.report_date)}, reverse=True)[:21])
         eligible = sum(filing.report_date in selected_periods for filing in filings)
         coverage = []
         read_count = 0
@@ -367,7 +380,7 @@ class FinancialHistorian:
                 coverage.append(CoverageRecord(
                     filing.accession, filing.report_date, filing.filed, filing.source_url,
                     "outside presentation window" if has_period else "unsupported",
-                    "Filing document not retrieved because its fiscal period is outside the latest 20-period window. "
+                    "Filing document not retrieved because its fiscal period is outside the latest 20-period window and bounded lookback. "
                     "Available SEC structured source facts are retained."
                     if has_period else "No valid annual fiscal period was reported in the filing index; "
                     "document retrieval was omitted rather than assigning a guessed period."))
@@ -384,6 +397,8 @@ class FinancialHistorian:
                 if document is not None:
                     extracted = parse_filing_html(document, filing)
                     facts.extend(extracted)
+                    from .disclosures import parse_disclosures
+                    disclosures.extend(parse_disclosures(document, filing))
             except SecAccessError as exc:
                 problem = str(exc)
                 retrieval_failed = True
@@ -422,6 +437,7 @@ class FinancialHistorian:
                             "network or provider access prevented a complete refresh.")
         report("Preparing statement rows and source records…")
         bundle = assemble_bundle(company, filings, facts, coverage, warnings)
+        bundle.disclosures = disclosures
         bundle.warnings = list(dict.fromkeys(bundle.warnings + inspect_bundle(bundle)))
         missing = sum(c.status in {"unsupported", "partial", "structured fallback"} for c in coverage)
         if missing:

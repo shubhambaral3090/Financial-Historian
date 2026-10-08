@@ -1,4 +1,4 @@
-FINANCIAL HISTORIAN — BROWSER WEB APP
+FISHTORIAN — BROWSER WEB APP
 
 1. Extract All from the ZIP into a folder you can write to.
    Keep all files together; do not launch inside the ZIP.
@@ -11,7 +11,8 @@ FINANCIAL HISTORIAN — BROWSER WEB APP
    account, subscription or payment is needed. Contact stays in this tab's
    session, not project files. Browser session-restore settings apply.
 5. Search or select a company. Prices, charts, SEC statements and Excel load
-   automatically. Your next normal action is Download Excel workbook.
+   automatically, including supported schedules and historical calculations.
+   Your next normal action is Download Excel workbook.
 
 Refresh the browser tab for new data checks. Failed providers do not hide the
 other section; cached results show original timestamps and warnings.
@@ -24,6 +25,8 @@ The default server accepts connections only from your own computer.
 
 Statements show at most 20 fiscal periods. Read Sources & Coverage and original
 SEC filings before using figures in a model. No forecasts or valuations are added.
+Metrics & learning explains formulas, inputs, and limitations. Missing data is not
+zero. Independent live-filing acceptance is pending; this is not a certified database.
 
 If an old .venv is incompatible, the launcher explains recovery without deleting
 it. Do not disable certificate verification to fix connection errors.

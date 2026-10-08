@@ -350,12 +350,12 @@ def test_generate_retrieves_only_latest_twenty_period_documents_but_keeps_amendm
     monkeypatch.setattr(service, "parse_company_facts", structured)
     monkeypatch.setattr(service, "parse_filing_html", lambda *_: [])
     bundle = historian(client).generate(COMPANY)
-    assert len(client.document_calls) == 21  # Twenty periods plus the latest amendment.
+    assert len(client.document_calls) == 22  # Twenty displayed periods, one lookback, plus amendment.
     assert len(bundle.filings) == 27
     assert len(bundle.raw_facts) == 27
     assert bundle.periods == [f"{year}-12-31" for year in range(2025, 2005, -1)]
     outside = [item for item in bundle.coverage if item.status == "outside presentation window"]
-    assert len(outside) == 6
+    assert len(outside) == 5
     assert all(item.report_date < "2006-01-01" for item in outside)
     assert all("not retrieved" in item.detail for item in outside)
 

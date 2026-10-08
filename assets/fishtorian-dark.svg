@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 190" role="img" aria-labelledby="title desc">
+ <title id="title">Fishtorian</title><desc id="desc">Two opposing Pisces-inspired fish around the wordmark, for dark backgrounds.</desc>
+ <g fill="#68d9d1">
+  <path d="M132 49C191 2 313 4 373 40Q389 51 383 61C343 77 307 52 300 37C248 16 191 24 154 48L136 68L139 49L119 32Z"/>
+  <path d="M388 141C329 188 207 186 147 150Q131 139 137 129C177 113 213 138 220 153C272 174 329 166 366 142L384 122L381 141L401 158Z"/>
+ </g>
+ <g fill="#152535"><circle cx="369" cy="49" r="3"/><circle cx="151" cy="141" r="3"/></g>
+ <text x="260" y="114" text-anchor="middle" fill="#f4f8fc" font-family="Arial, Helvetica, sans-serif" font-size="55" font-weight="600" letter-spacing="-2">Fishtorian</text>
+</svg>

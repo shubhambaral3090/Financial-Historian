@@ -15,6 +15,16 @@ import financial_historian.universe
 from ui_fixtures import FixtureHistorian, FixtureMarket, FixtureUniverse
 
 FixtureHistorian.periods = 25
+if os.environ.get("FISHTORIAN_RICH_FIXTURE") == "1":
+    from dataclasses import replace
+    from test_analysis import historical_fixture
+    def rich_generate(self, company, progress=None):
+        bundle = historical_fixture()
+        bundle.company = replace(company, sic="3571")
+        if progress:
+            progress("Preparing fictional historical analysis acceptance data")
+        return bundle
+    FixtureHistorian.generate = rich_generate
 financial_historian.service.FinancialHistorian = FixtureHistorian
 financial_historian.market.YahooFinanceProvider = FixtureMarket
 financial_historian.universe.UniverseProvider = FixtureUniverse

@@ -10,6 +10,7 @@ class Company:
     cik: str
     name: str
     ticker: str = ""
+    sic: str = ""
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,9 @@ class Fact:
     source_instant: str | None = None
     # Reported section disambiguates repeated labels such as "Other".
     section: str = ""
+    context_id: str = ""
+    dimensions: tuple[tuple[str, str], ...] = ()
+    decimals: str = ""
 
 
 @dataclass
@@ -81,3 +85,4 @@ class StatementBundle:
     coverage: list[CoverageRecord] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     generated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    disclosures: list[Fact] = field(default_factory=list)

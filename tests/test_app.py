@@ -149,7 +149,7 @@ def test_contact_is_session_only_and_ignores_legacy_settings(ui_file, settings):
     app = AppTest.from_file(str(ui_file)).run()
     input_field(app, "Your name or organization").input("Offline Fixture")
     input_field(app, "Contact email").input("offline@example.invalid")
-    button(app, "Continue to Financial Historian").click().run()
+    button(app, "Continue to Fishtorian").click().run()
     assert not app.exception
     assert path.read_text(encoding="utf-8") == settings
     assert app.session_state["contact_email"] == "offline@example.invalid"
@@ -168,7 +168,7 @@ def test_invalid_contact_rejected_without_request_or_write(ui_file, name, email,
     app = AppTest.from_file(str(ui_file)).run()
     input_field(app, "Your name or organization").input(name)
     input_field(app, "Contact email").input(email)
-    button(app, "Continue to Financial Historian").click().run()
+    button(app, "Continue to Fishtorian").click().run()
     assert not app.exception
     assert any(message in item.value for item in app.error)
     assert not (ui_file.parent / "data" / "settings.json").exists()

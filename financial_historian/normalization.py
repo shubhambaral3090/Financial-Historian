@@ -50,8 +50,12 @@ def _register(statement, key, label, section, order, tags=(), labels=(), *, tota
 
 P, B, C = STATEMENTS
 _register(P, "revenue", "Revenue", "Income statement", 10,
-          ["Revenues", "SalesRevenueNet", "RevenueFromContractWithCustomerExcludingAssessedTax"],
-          ["Revenue", "Revenues", "Net sales", "Total net sales", "Total revenue", "Total revenues"], total=True, supplement=True)
+          ["Revenues"],
+          ["Revenue", "Revenues", "Total revenue", "Total revenues"], total=True, supplement=True)
+_register(P, "net_sales", "Net sales", "Income statement", 11,
+          ["SalesRevenueNet"], ["Net sales", "Total net sales"], total=True, supplement=True)
+_register(P, "contract_revenue", "Customer-contract revenue, excluding assessed tax", "Income statement", 12,
+          ["RevenueFromContractWithCustomerExcludingAssessedTax"], total=True, supplement=True)
 # Tax-inclusive revenue and product/service components intentionally stay separate.
 _register(P, "cost_of_sales", "Cost of sales", "Income statement", 20,
           ["CostOfGoodsAndServicesSold", "CostOfRevenue", "CostOfSales"],
@@ -180,6 +184,14 @@ _NOTE_ONLY = {"CommonStockParOrStatedValuePerShare", "CommonStockSharesAuthorize
 
 
 def _unscoped_concept_for(fact: Fact) -> Concept | None:
+    # Inline labels provide issuer-specific scope unavailable in companyfacts.
+    # A net-sales label is not evidence that a broader Revenues total is equivalent.
+    if fact.statement == P and fact.extraction in {"inline-xbrl", "html-table"}:
+        label = _label_key(fact.label)
+        if label in {"net sales", "total net sales"}:
+            return _CONCEPTS[(P, "net_sales")]
+        if label in {"total revenue", "total revenues"}:
+            return _CONCEPTS[(P, "revenue")]
     if fact.statement == C and fact.row_role in {"cash_begin", "cash_end"}:
         prefix = "restricted_" if "RestrictedCash" in fact.tag or "restricted cash" in fact.label.lower() else ""
         return _CONCEPTS[(C, prefix + fact.row_role)]

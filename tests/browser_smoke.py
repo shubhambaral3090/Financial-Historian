@@ -25,7 +25,7 @@ from openpyxl import load_workbook
 from playwright.sync_api import sync_playwright, expect
 
 
-def run(chromium: str, output: Path) -> dict:
+def run(chromium: str, output: Path, rich: bool = False) -> dict:
     root = Path(__file__).resolve().parents[1]
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
@@ -33,6 +33,8 @@ def run(chromium: str, output: Path) -> dict:
     base = f"http://127.0.0.1:{port}"
     environment = dict(os.environ)
     environment.pop("SEC_USER_AGENT", None)
+    if rich:
+        environment["FISHTORIAN_RICH_FIXTURE"] = "1"
     server = subprocess.Popen(
         [sys.executable, "-m", "streamlit", "run", "tests/browser_fixture_app.py",
          "--server.headless=true", "--browser.gatherUsageStats=false",
@@ -77,7 +79,7 @@ def run(chromium: str, output: Path) -> dict:
                 assert not page.get_by_role("button", name="Search companies", exact=True).count()
                 page.get_by_label("Your name or organization", exact=True).fill("Offline Fixture")
                 page.get_by_label("Contact email", exact=True).fill("offline@example.invalid")
-                page.get_by_role("button", name="Continue to Financial Historian", exact=True).click()
+                page.get_by_role("button", name="Continue to Fishtorian", exact=True).click()
                 expect(dialog).to_be_hidden(timeout=15000)
                 search = page.get_by_label("Company name, ticker, or CIK", exact=True)
                 expect(search).to_be_visible(timeout=15000)
@@ -87,9 +89,24 @@ def run(chromium: str, output: Path) -> dict:
                 page.get_by_role("button", name="Fictional UI Fixture · FIX", exact=True).click()
                 download_button = page.get_by_role("button", name="Download Excel workbook", exact=True)
                 expect(download_button).to_be_visible(timeout=20000)
+                expect(page.get_by_text("Research page ready",exact=True)).to_be_visible(timeout=20000)
+                page.get_by_role("tab", name="Statements", exact=True).click()
                 page.get_by_role("tab", name="Cash flow", exact=True).click()
-                expect(page.locator(".statement-preview").filter(has_text="Capital expenditures")).to_be_visible()
-                expect(page.locator(".statement-preview").filter(has_text="Capital expenditures")).to_contain_text("(1.2)")
+                if not rich:
+                    expect(page.locator(".statement-preview").filter(has_text="Capital expenditures")).to_be_visible()
+                    expect(page.locator(".statement-preview").filter(has_text="Capital expenditures")).to_contain_text("(1.2)")
+                else:
+                    page.get_by_role("tab",name="Metrics & learning",exact=True).click()
+                    expect(page.get_by_text("Learn as you analyse",exact=True)).to_be_visible()
+                    expect(page.locator(".statement-preview:visible").filter(has_text="Operating margin")).to_contain_text("15.00%")
+                    page.get_by_text("Learn as you analyse",exact=True).scroll_into_view_if_needed()
+                    page.screenshot(path=str(output / f"{name}-learning.png"))
+                    page.get_by_role("tab",name="Schedules",exact=True).click()
+                    expect(page.get_by_text("Historical supporting schedules",exact=True)).to_be_visible()
+                    page.get_by_role("tab",name="Sources & checks",exact=True).click()
+                    expect(page.get_by_text("Evidence and validation",exact=True)).to_be_visible()
+                    page.get_by_role("tab",name="Overview",exact=True).click()
+                    expect(page.get_by_text("Understand the history",exact=True)).to_be_visible()
                 for label in ("Prepare Excel download", "Refresh market data", "Refresh this company", "Refresh company universe"):
                     assert not page.get_by_role("button", name=label, exact=True).count()
                 body = page.locator("body").inner_text()
@@ -113,8 +130,13 @@ def run(chromium: str, output: Path) -> dict:
                 workbook = load_workbook(BytesIO(content))
                 assert {"Data Sheet", "Source Data", "Sources & Coverage"} <= set(workbook.sheetnames)
                 values = [cell.value for row in workbook["Cash Flow Detail"] for cell in row]
-                assert values.count(-1.2) == 20
-                assert "2004-12-31" not in values and "2005-12-31" in values
+                if not rich:
+                    assert values.count(-1.2) == 20
+                    assert "2004-12-31" not in values and "2005-12-31" in values
+                else:
+                    cached = load_workbook(BytesIO(content),data_only=True)
+                    row = next(r for r in cached["Historical Ratios"] if str(r[0].value).startswith("Operating margin ["))
+                    assert row[-1].value == 0.15
                 with ZipFile(BytesIO(content)) as archive:
                     assert not any(b"offline@example.invalid" in archive.read(member) for member in archive.namelist())
                 # Browser-side sessionStorage must survive an actual document
@@ -138,7 +160,7 @@ def run(chromium: str, output: Path) -> dict:
                 assert not external, "Fixture browser made an unexpected external request"
                 report["viewports"].append({"name": name, "width": width, "height": height,
                                            "automatic_download": True, "contact_reload": True,
-                                           "twenty_periods": True, "page_overflow": False})
+                                           "twenty_periods": not rich, "historical_analysis": rich, "page_overflow": False})
                 context.close()
             browser.close()
     finally:
@@ -155,8 +177,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--chromium", default="/usr/bin/chromium")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--rich",action="store_true",help="Exercise historical metrics and schedules with hand-calculated data")
     args = parser.parse_args()
     destination = args.output or Path(tempfile.mkdtemp(prefix="financial-historian-browser-"))
     destination.mkdir(parents=True, exist_ok=True)
-    result = run(args.chromium, destination)
+    result = run(args.chromium, destination, args.rich)
     print(json.dumps(result, indent=2))

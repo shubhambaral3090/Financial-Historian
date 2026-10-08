@@ -4,8 +4,8 @@ rem Never let either Python launcher install a runtime on our behalf.
 set "PYTHON_MANAGER_AUTOMATIC_INSTALL=false"
 set "PYLAUNCHER_ALLOW_INSTALL="
 cd /d "%~dp0"
-title Financial Historian
-echo Financial Historian - browser application
+title Fishtorian
+echo Fishtorian - browser application
 echo.
 
 if not exist "%~dp0scripts\launch_local.py" goto incomplete_zip

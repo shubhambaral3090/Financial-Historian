@@ -156,7 +156,7 @@ def main() -> int:
         executable = select_interpreter()
         print(f"Using compatible installed Python: {executable}", flush=True)
         python = prepare_environment(root, executable=executable)
-        print("Opening Financial Historian. Keep this window open; press Ctrl+C to stop.", flush=True)
+        print("Opening Fishtorian. Keep this window open; press Ctrl+C to stop.", flush=True)
         command = [str(python), "-m", "streamlit", "run", str(root / "app.py"),
                    "--server.address=127.0.0.1", "--server.port=8501", "--server.headless=false",
                    "--browser.gatherUsageStats=false"]

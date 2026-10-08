@@ -432,7 +432,7 @@ def _deduplicate(facts: Iterable[Fact]) -> list[Fact]:
     seen = set()
     result = []
     for fact in facts:
-        key = (fact.statement, fact.tag, fact.unit, fact.start, fact.end, fact.accession, fact.value, fact.presentation_value, fact.row_role, fact.source_instant, fact.section)
+        key = (fact.statement, fact.tag, fact.unit, fact.start, fact.end, fact.accession, fact.value, fact.presentation_value, fact.row_role, fact.source_instant, fact.section, fact.context_id, fact.dimensions, fact.decimals)
         if key not in seen:
             seen.add(key)
             result.append(fact)
@@ -523,7 +523,7 @@ def parse_filing_html(content: bytes, filing: Filing) -> list[Fact]:
                 continue
             presentation_value = _presentation_value(node)
             explanation = "Instant cash balance assigned to its verified annual statement column; original context date is recorded separately." if row_role else ""
-            facts.append(Fact(tag, label, unit, value, start, end, filing.accession, filing.filed, filing.form, filing.source_url, statement, "inline-xbrl", selection_reason=explanation, presentation_value=presentation_value, row_role=row_role, source_instant=source_instant, section=sections.get(row, "")))
+            facts.append(Fact(tag, label, unit, value, start, end, filing.accession, filing.filed, filing.form, filing.source_url, statement, "inline-xbrl", selection_reason=explanation, presentation_value=presentation_value, row_role=row_role, source_instant=source_instant, section=sections.get(row, ""), context_id=_attr(node, "contextref"), decimals=_attr(node, "decimals")))
             seen_main = True
     return _deduplicate(facts)
 
@@ -557,7 +557,7 @@ def parse_xbrl_instance(content: bytes, filing: Filing) -> list[Fact]:
         if value is None:
             continue
         tag = ("us-gaap" if "us-gaap" in namespace else "ifrs-full") + ":" + qname.localname
-        facts.append(Fact(tag, _row_label(node, tag), unit, value, start, end, filing.accession, filing.filed, filing.form, filing.source_url, statement, "xbrl-instance"))
+        facts.append(Fact(tag, _row_label(node, tag), unit, value, start, end, filing.accession, filing.filed, filing.form, filing.source_url, statement, "xbrl-instance", context_id=_attr(node, "contextref"), decimals=_attr(node, "decimals")))
     return _deduplicate(facts)
 
 
@@ -781,11 +781,14 @@ def assemble_bundle(company: Company, filings: list[Filing], facts: list[Fact], 
     by the same or a newer filing. A partial native table must not hide EPS or
     cash-flow totals that the very same filing supplies through companyfacts.
     """
-    from .normalization import (clean_label, concept_for, fallback_presentation,
+    from .normalization import (clean_label, concept_for, concept_key, fallback_presentation,
                                 include_on_face, row_identity, row_order)
 
     accepted = [fact for fact in _deduplicate(facts) if fact.statement in STATEMENTS and fact.form.upper() in ANNUAL_FORMS and math.isfinite(fact.value) and _date(fact.end) and (fact.statement == STATEMENTS[1] and fact.start is None or fact.statement != STATEMENTS[1] and _annual_duration(fact.start, fact.end))]
     result = StatementBundle(company=company, filings=filings, raw_facts=accepted, coverage=coverage, warnings=list(warnings))
+    revenue_keys = {"revenue", "net_sales", "contract_revenue"}
+    if len({concept_key(f) for f in accepted if concept_key(f) in revenue_keys}) > 1:
+        result.warnings.append("Revenue observations have different scopes (total revenue, net sales or customer contracts); they remain separately identified.")
     source_rank = {"inline-xbrl": 3, "html-table": 2, "xbrl-instance": 1, "companyfacts": 0}
     native_types = {"inline-xbrl", "html-table"}
     by_period = defaultdict(list)
@@ -826,6 +829,18 @@ def assemble_bundle(company: Company, filings: list[Filing], facts: list[Fact], 
         if main_table:
             for fact in candidates:
                 if fact.extraction in native_types or (fact.filed, fact.accession) < latest_native:
+                    continue
+                if any(fact.tag == native_fact.tag and fact.unit == native_fact.unit
+                       and fact.accession == native_fact.accession and fact.value == native_fact.value
+                       for native_fact in main_table):
+                    # Native issuer labels can resolve the scope more precisely
+                    # than the standardized companyfacts label for the same fact.
+                    continue
+                if concept_key(fact) in revenue_keys and any(
+                    concept_key(n) in revenue_keys and n.unit == fact.unit and n.start == fact.start
+                    and n.value == fact.value and n.accession == fact.accession for n in main_table):
+                    # Redundant standardized revenue disclosures do not create an
+                    # extra face row. Distinct native rows are always retained.
                     continue
                 concept = concept_for(fact)
                 key = identity(fact)
@@ -907,7 +922,7 @@ def assemble_bundle(company: Company, filings: list[Filing], facts: list[Fact], 
             if statement_row is None:
                 label = concept.label if concept else clean_label(picked.label)
                 if (statement, row_identity(picked)) in split_aliases:
-                    label += " [" + picked.tag.rsplit(":", 1)[-1] + "]"
+                    label = clean_label(picked.label) + " (distinct reported scope)"
                 statement_row = StatementRow(picked.tag, label, picked.unit,
                                              accepted_tags={picked.tag}, section=picked.section,
                                              is_total=bool(concept and concept.is_total))

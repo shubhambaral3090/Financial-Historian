@@ -128,7 +128,7 @@ def _fact_comment(fact: Fact, display_unit: str, rejection: str | None = None) -
     ])
     if len(text) > MAX_TEXT_LENGTH or _ILLEGAL_TEXT.search(text):
         raise ValueError("A provenance comment exceeds Excel's text limits or contains invalid characters.")
-    comment = Comment(text, "Financial Historian")
+    comment = Comment(text, "Fishtorian")
     comment.width = 460
     comment.height = 340
     return comment
@@ -387,7 +387,7 @@ def build_workbook(bundle: StatementBundle, progress: Callable[[str], None] | No
     except (TypeError, ValueError):
         raise ValueError("Annual period labels must be ISO dates (YYYY-MM-DD).") from None
 
-    raw_facts = list(bundle.raw_facts)
+    raw_facts = list(bundle.raw_facts) + [f for f in bundle.disclosures if f not in bundle.raw_facts]
     seen = set(raw_facts)
     for rows in bundle.statements.values():
         for row in rows:
@@ -405,14 +405,14 @@ def build_workbook(bundle: StatementBundle, progress: Callable[[str], None] | No
                 not isinstance(fact.presentation_value, (int, float)) or
                 not math.isfinite(fact.presentation_value)):
             raise ValueError("Statement presentation values must contain finite numeric values when supplied.")
-    _check_dimensions(len(raw_facts) + HEADER_ROW, 18, "Source Data")
+    _check_dimensions(len(raw_facts) + HEADER_ROW, 21, "Source Data")
     _check_dimensions(len(bundle.filings) + len(bundle.coverage) + len(bundle.warnings) + HEADER_ROW,
                       8, "Sources & Coverage")
 
     workbook = Workbook()
     workbook.remove(workbook.active)
-    workbook.properties.title = "Financial Historian annual statements"
-    workbook.properties.creator = "Financial Historian"
+    workbook.properties.title = "Fishtorian annual statements"
+    workbook.properties.creator = "Fishtorian"
     displayed: dict[Fact, list[str]] = {}
     withheld = 0
     unavailable_periods: dict[str, list[str]] = {}
@@ -437,17 +437,18 @@ def build_workbook(bundle: StatementBundle, progress: Callable[[str], None] | No
 
     report(f"Writing {len(raw_facts):,} source observations…")
     data = _base_sheet(workbook, "Source Data", bundle.company.name,
-                       "Raw source values and optional statement presentation values retain their reported units. Original instant contexts are separate from annual display periods. No monetary scaling or currency conversion is applied on this sheet.", 18)
+                       "Raw source values and optional statement presentation values retain their reported units. Original instant contexts are separate from annual display periods. No monetary scaling or currency conversion is applied on this sheet.", 21)
     _headers(data, ["Statement", "SEC tag / row identifier", "Reported label", "Reported unit", "Source/XBRL value (unscaled)",
                     "Annual display period start", "Annual display period end", "Accession", "Filed", "Form", "Extraction", "Selection reason",
                     "Source filing", "Displayed cells", "Statement presentation value (unscaled)",
-                    "Original source instant", "Row role", "Reported section"])
+                    "Original source instant", "Row role", "Reported section", "Context", "Dimensions", "Decimals"])
     for row_number, fact in enumerate(raw_facts, FIRST_DATA_ROW):
-        _style_row(data, row_number, 18)
+        _style_row(data, row_number, 21)
         values = [fact.statement, fact.tag, fact.label, fact.unit, fact.value, fact.start, fact.end,
                   fact.accession, fact.filed, fact.form, fact.extraction, fact.selection_reason,
                   fact.source_url, "; ".join(displayed.get(fact, [])), fact.presentation_value,
-                  fact.source_instant, fact.row_role, fact.section]
+                  fact.source_instant, fact.row_role, fact.section, fact.context_id,
+                  "; ".join(f"{axis}={member}" for axis,member in fact.dimensions), fact.decimals]
         for col, value in enumerate(values, 1):
             cell = data.cell(row_number, col)
             if col in {5, 15} and value is not None:
@@ -457,8 +458,8 @@ def build_workbook(bundle: StatementBundle, progress: Callable[[str], None] | No
                 _write_text(cell, value)
         _source_link(data.cell(row_number, 13), fact.source_url)
     data.freeze_panes = "F5"
-    data.auto_filter.ref = f"A4:R{max(HEADER_ROW, len(raw_facts) + HEADER_ROW)}"
-    for col in range(1, 19):
+    data.auto_filter.ref = f"A4:U{max(HEADER_ROW, len(raw_facts) + HEADER_ROW)}"
+    for col in range(1, 22):
         data.column_dimensions[get_column_letter(col)].width = {2: 52, 3: 52, 6: 25, 7: 25, 12: 72, 13: 82, 14: 45, 15: 34, 16: 25}.get(col, 20)
 
     report("Adding filing coverage and missing-history notes…")
@@ -495,7 +496,13 @@ def build_workbook(bundle: StatementBundle, progress: Callable[[str], None] | No
         sources.column_dimensions[get_column_letter(col)].width = width
 
     readme = _base_sheet(workbook, "Read Me", bundle.company.name,
-                         "Reported annual financial history for research. Review source filings before using the figures in a projection model.", 2)
+                         "Fishtorian · Historical financial research. Reported facts, transparent calculations, traceable sources.", 2)
+    from openpyxl.drawing.image import Image
+    from .branding import ASSETS
+    logo = Image(str(ASSETS / "fishtorian-workbook.png"))
+    logo.width, logo.height = 260, 95
+    readme.add_image(logo, "A3")
+    readme.row_dimensions[3].height = 76
     _headers(readme, ["Topic", "Explanation"])
     notes = [
         ("Company", bundle.company.name), ("Ticker", bundle.company.ticker), ("SEC CIK", bundle.company.cik),
@@ -517,7 +524,10 @@ def build_workbook(bundle: StatementBundle, progress: Callable[[str], None] | No
         ("Analyst adjustments", "Figures remain as reported in the selected source. No normalization of one-time expenses, valuations, growth forecasts or analyst adjustments is performed."),
         ("Provenance", "Every displayed numeric statement value has a comment with SEC tag, raw unit/value, accession, filed date, period dates, extraction and selection reason. Valid SEC source URLs are clickable."),
         ("Link policy", "Only HTTPS links on sec.gov, www.sec.gov or data.sec.gov using SEC archive/XBRL/submissions paths become hyperlinks. Other source text remains literal and is not executable."),
-        ("Excel text safety", "All company names, labels, tags, warnings, metadata and source text are written as literal strings, including text beginning with =, +, - or @. The workbook contains no formulas."),
+        ("Excel text safety", "Source and user text is always literal. Only application-generated analytical formulas are executable; their dependency graph is in Calculation Inputs."),
+        ("Historical analysis", "Supporting schedules group reported observations. Historical Ratios, Return Bridge and Common Size use documented calculations, not forecasts. Methodology defines applicability and limitations."),
+        ("Formula results", "Analytical formulas include cached numerical results for data-only readers. Excel automatic recalculation is enabled; edits require a spreadsheet application that supports these formulas."),
+        ("Acceptance status", "Independent live-filing verification across representative companies remains required before institutional acceptance. Passed arithmetic checks are not an audit."),
         ("Withheld inconsistent cells", str(withheld)),
     ]
     for row_number, (topic, explanation) in enumerate(notes, FIRST_DATA_ROW):
@@ -530,8 +540,12 @@ def build_workbook(bundle: StatementBundle, progress: Callable[[str], None] | No
     readme.column_dimensions["B"].width = 120
     readme.freeze_panes = "B5"
 
+    report("Building historical schedules and auditable calculations…")
+    from .analysis import build_analysis
+    from .analysis_export import append_analysis, cache_formula_results
+    cache = append_analysis(workbook, bundle, build_analysis(bundle))
     report("Saving the Excel file…")
     output = BytesIO()
     workbook.save(output)
     report("Excel file is ready.")
-    return output.getvalue()
+    return cache_formula_results(output.getvalue(), workbook, cache)

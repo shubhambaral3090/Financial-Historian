@@ -1,4 +1,4 @@
-# Financial Historian
+# Fishtorian
 
 Use the existing checkout. Normal development does not need a Git worktree.
 
@@ -16,10 +16,15 @@ confirmed restatements. Report unsupported periods and formats explicitly.
 
 Present the latest 20 fiscal periods, with the same selected bundle in the browser
 and Excel. Read SEC submissions shards for discovery, but limit document retrieval
-to the selected window. Preserve raw source facts and explain omitted periods.
+to 21 periods (20 displayed plus beginning-balance/metadata lookback). Preserve raw
+source facts and explain omitted periods.
 SEC discovery is not lifetime coverage. Suggestion groups are manually maintained,
 dated and explicitly incomplete; do not claim certified current index membership.
 Do not add forecasts, valuations, analyst adjustments or investment conclusions.
+Documented historical calculations belong in the separate analysis dependency
+graph, not in reported statements. Browser and Excel must use that same graph.
+Missing or incompatible inputs produce explained blanks. Do not call this release
+institutional grade before independent live-filing acceptance in docs/RELEASE_v0.5.md.
 
 SEC networking needs a real contact entered in the tab session or through
 SEC_USER_AGENT. Never print it, hardcode an identity, disable TLS verification,

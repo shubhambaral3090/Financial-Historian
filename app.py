@@ -13,6 +13,8 @@ import streamlit as st
 import altair as alt
 
 from financial_historian import __version__
+from financial_historian.analysis_ui import render_analytics
+from financial_historian.branding import ASSETS
 from financial_historian.contact import browser_contact, validate_contact
 from financial_historian.export import CURRENCIES
 from financial_historian.models import STATEMENTS, Company, StatementBundle
@@ -111,7 +113,7 @@ def contact_dialog() -> None:
     with st.form("first_launch_contact"):
         name = st.text_input("Your name or organization", max_chars=120)
         email = st.text_input("Contact email", max_chars=200)
-        submitted = st.form_submit_button("Continue to Financial Historian", type="primary", width="stretch")
+        submitted = st.form_submit_button("Continue to Fishtorian", type="primary", width="stretch")
     if submitted:
         try:
             save_contact(name, email)
@@ -261,6 +263,12 @@ def render_bundle(bundle: StatementBundle) -> None:
         count = len(bundle.warnings)
         st.caption(f"{count} retrieval and accounting {'note is' if count == 1 else 'notes are'} available in Coverage & notes below and in the workbook.")
 
+    render_analytics(bundle, render_statements)
+
+
+def render_statements(bundle: StatementBundle) -> None:
+    periods = sorted(bundle.periods)
+    empty_periods = sorted(set(periods) - set(value_periods(bundle)))
     st.subheader("Statement preview")
     st.caption("Currency amounts in millions; per-share figures and share counts retain their reported units. Periods run oldest to newest, matching Excel. Scroll across for later years. A dash means unavailable.")
     tabs = st.tabs(["Income statement", "Balance sheet", "Cash flow"])
@@ -329,7 +337,7 @@ def render_bundle(bundle: StatementBundle) -> None:
 
 
 
-st.set_page_config(page_title="Financial Historian", page_icon="📄", layout="wide", initial_sidebar_state="auto")
+st.set_page_config(page_title="Fishtorian", page_icon=str(ASSETS / "fishtorian-mark.svg"), layout="wide", initial_sidebar_state="auto")
 st.markdown(
     """<style>
     .stApp { background: #ffffff; color: #202123; }
@@ -399,7 +407,7 @@ if not environment_contact:
 user_agent = environment_contact or st.session_state.get("user_agent", "")
 
 with st.sidebar:
-    st.markdown("### Financial Historian")
+    st.markdown("### Fishtorian")
     st.caption("Your private financial research workspace")
     st.divider()
     suggestion_area = st.container()
@@ -413,14 +421,14 @@ with st.sidebar:
         st.caption("SEC contact is session-only. The bounded SEC response cache contains public records, not your contact.")
         st.download_button(
             "Download diagnostic log",
-            data="\n".join([f"Financial Historian {APP_VERSION}",
+            data="\n".join([f"Fishtorian {APP_VERSION}",
                            f"Python {platform.python_version()} / {platform.system()}",
                            "SEC contact identity omitted.", *st.session_state.get("diagnostics", [])]),
             file_name="financial_historian_diagnostics.txt", mime="text/plain", width="stretch",
         )
     st.caption(f"Web edition · v{APP_VERSION}")
 
-st.markdown('<div class="brand">Financial Historian</div>', unsafe_allow_html=True)
+st.image(str(ASSETS / "fishtorian.svg"),width=270)
 if not user_agent:
     st.markdown('<div class="welcome"><h1>Your financial research workspace</h1>'
                 '<p>Sourced annual statements, market context, and a clean Excel workbook.</p></div>',
@@ -511,9 +519,13 @@ if selected:
                 elif event.kind == "financial" and event.bundle:
                     st.session_state["bundle"] = event.bundle
                     with financial_area.container():
-                        render_bundle(event.bundle)
+                        # Static preview can be replaced in the same Streamlit
+                        # run. Interactive controls must only be created once.
+                        st.info("Statements retrieved. Building schedules and the Excel workbook…")
+                        st.caption(f"{len(event.bundle.periods)} selected annual periods. Source checks and the matching workbook are being prepared automatically.")
                 elif event.kind == "workbook" and event.workbook and st.session_state.get("bundle"):
                     store_workbook(event.workbook, st.session_state["selected_company"])
+                    financial_area.empty()
                     with financial_area.container():
                         render_bundle(st.session_state["bundle"])
                     rendered["workbook"] = True
@@ -555,6 +567,7 @@ if selected:
             if result.workbook:
                 st.caption(f"Workbook generated {result.workbook_generated_at} (UTC)")
             if not rendered["workbook"]:
+                financial_area.empty()
                 with financial_area.container():
                     render_bundle(result.bundle)
         elif result.sec_error:

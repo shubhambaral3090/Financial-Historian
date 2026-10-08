@@ -72,6 +72,8 @@ def inspect_filing(facts: list[Fact], report_date: str) -> list[str]:
     """Return explicit limitations for the filing's own annual report period."""
     selected = [fact for fact in facts if fact.end == report_date]
     keys = {concept_key(fact) for fact in selected}
+    if keys & {"net_sales", "contract_revenue"}:
+        keys.add("revenue")
     missing = []
     for key, label in (("revenue", "revenue"), ("net_income", "net income"),
                        ("assets", "total assets"), ("cfo", "operating cash flow"),

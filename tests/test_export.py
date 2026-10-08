@@ -66,8 +66,9 @@ def loaded(bundle):
 def test_workbook_preserves_units_missing_values_and_chronological_periods():
     bundle = sample_bundle()
     workbook = loaded(bundle)
-    assert workbook.sheetnames == ["Profit & Loss", "Balance Sheet", "Cash Flow",
+    assert workbook.sheetnames[:8] == ["Profit & Loss", "Balance Sheet", "Cash Flow",
                                     "Cash Flow Detail", "Data Sheet", "Source Data", "Sources & Coverage", "Read Me"]
+    assert len(workbook["Read Me"]._images) == 1
     sheet = workbook["Profit & Loss"]
     assert [sheet.cell(4, c).value for c in range(2, 5)] == ["2022-12-31", "2023-12-31", "2024-12-31"]
     assert sheet["B5"].value == 42.25
@@ -125,7 +126,7 @@ def test_source_data_references_match_all_matrix_and_statement_values():
         "Statement", "SEC tag / row identifier", "Reported label", "Reported unit", "Source/XBRL value (unscaled)",
         "Annual display period start", "Annual display period end", "Accession", "Filed", "Form", "Extraction",
         "Selection reason", "Source filing", "Displayed cells", "Statement presentation value (unscaled)",
-        "Original source instant", "Row role", "Reported section",
+        "Original source instant", "Row role", "Reported section", "Context", "Dimensions", "Decimals",
     ]
     matrix_references = 0
     for record in raw.iter_rows(min_row=5, values_only=True):
@@ -282,7 +283,7 @@ def test_beginning_and_ending_cash_keep_same_sec_tag_and_original_instant_dates(
     assert raw["Q6"].value == "cash_end"
     assert raw["B5"].value == raw["B6"].value == cash_tag
     assert raw["G4"].value == "Annual display period end"
-    assert raw.auto_filter.ref == "A4:R6"
+    assert raw.auto_filter.ref == "A4:U6"
 
 
 def test_all_external_text_is_literal_even_when_it_looks_like_a_formula():

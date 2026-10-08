@@ -1,11 +1,19 @@
-# Financial Historian
+# Fishtorian
 
-A private, browser-based financial research workspace. Select a company to
-automatically load Yahoo market context, SEC annual statements, coverage notes,
-and a matching Excel workbook. Then choose **Download Excel workbook**.
+A private, browser-based historical financial research workspace. Select a company
+to automatically load Yahoo market context, SEC annual statements, supporting
+schedules, historical calculations, explanations and a matching Excel workbook.
+Then choose **Download Excel workbook**.
 
-Version 0.4 presents up to **20 fiscal periods**. This is a research starting
+Version 0.5 presents up to **20 fiscal periods**. This is a research starting
 point, not a certified database, valuation model, or investment recommendation.
+Institutional acceptance remains pending independent live-filing verification.
+See [release evidence](docs/RELEASE_v0.5.md), [accounting specification](docs/SPEC_v0.5.md),
+[research methodology](docs/METHODOLOGY.md), and the
+[fictional example workbook](docs/examples/Fishtorian_Example.xlsx).
+
+The Fishtorian wordmark is surrounded by two opposing Pisces-inspired fish.
+The GitHub repository and internal Python package keep their existing names.
 
 ## Start the web app on Windows 11
 
@@ -71,29 +79,68 @@ SEC extraction and can be replaced later.
 ## Financial history and Excel
 
 The SEC is authoritative. Annual filing metadata is discovered through all listed
-submissions shards; supported documents are retrieved for the latest 20 fiscal
-period ends. Older metadata and raw structured facts remain auditable. The app
+submissions shards; supported documents are retrieved for a bounded 21-period
+window, allowing a lookback balance or recovery of a misleading metadata date.
+Presentation stays limited to 20 annual ends. Older metadata and raw structured facts remain auditable. The app
 does not retrieve every company's financial history or build a permanent archive.
 
-Workbook layout follows the supplied Reliance reference's compact annual columns,
-without copying its projections or calculated ratios:
+Workbook layout follows the supplied Reliance reference's compact annual columns.
+Historical calculations use this project's explicit definitions:
 
 - **Profit & Loss, Balance Sheet, Cash Flow:** reported sections and bold totals.
   Cash Flow is a compact reported-total overview; **Cash Flow Detail** matches the
   full cash-flow preview online.
 - **Data Sheet:** column A contains reported line items; B:U contain up to 20
   fiscal dates, oldest to newest. Three vertical statement blocks keep it clean.
-- **Source Data:** 18 technical columns retain original tags, labels, units,
+- **Source Data:** 21 technical columns retain original tags, labels, units,
   unscaled values, period dates, accession, filed date, form, extraction, selection
   reason, source URL, displayed-cell coordinates, presentation value, original
-  instant, row role and section. Older raw facts remain here.
+  instant, row role, section, context ID, dimensions and source decimals when supplied. Older raw facts remain here.
 - **Sources & Coverage / Read Me:** 20-period policy, blanks, omitted/unsupported
   data, selection rules, warnings and original source links.
+- **Six supporting schedules:** Revenue & Segments, Working Capital, Debt &
+  Liquidity, Capital & PP&E, Earnings & Cash, and Equity & Shares. These group
+  supported reported observations; they do not invent complete roll-forwards.
+- **Historical Ratios / Return Bridge / Common Size:** descriptive calculations
+  from compatible inputs. No future columns, recommendations or composite scores.
+- **Methodology / Calculation Inputs / Validation:** definitions, an inspectable
+  dependency graph, source evidence, and passed/discrepancy/insufficient-information/
+  not-applicable checks.
 
-Each populated financial cell has a source link and provenance comment. Browser
+Each populated reported statement cell has a source link and provenance comment.
+Calculated cells link through formulas and comments to Calculation Inputs. Browser
 and export share one selected dataset, periods, units, signs and warnings.
 Currency values use millions; per-share figures and share counts retain reported
 units. Source Data preserves original XBRL signs separately from printed signs.
+Excel formulas include cached results for data-only readers. Excel recalculation
+is enabled; editing formulas or inputs requires a compatible spreadsheet application.
+
+### Historical analysis and learning
+
+Overview, Statements, Schedules, Metrics & learning, and Sources & checks provide
+progressively deeper views. Guided paths explain profitability, cash generation,
+working capital and debt. Each metric has a formula, interpretation limitations,
+company-specific worked inputs, and filing evidence.
+
+Industrial-company methods require a known nonfinancial SEC SIC. Unknown SICs,
+financial firms, missing components, unlike currencies, differing duration starts,
+conflicting same-period filing vintages and unsuitable denominators can make a
+metric unavailable. The reason appears online and in the workbook cell comment.
+
+Total revenue, net sales and customer-contract revenue remain distinct. Growth
+requires a consistent basis. A wholly unsupported metadata date less than 120 days
+from an observed annual end is excluded by an explicitly documented heuristic;
+coverage keeps the original record. Genuine missing annual years remain visible.
+
+Annual inline note support includes curated PP&E, interest, common equity/income,
+debt/maturity concepts, and explicitly dimensional business-segment, product and
+geographic facts. Supported standard note facts can also come from companyfacts.
+Members may overlap and must not be summed blindly. Maturities are contractual
+as-of disclosures. Arbitrary custom debt notes, scanned reports, complete PP&E/debt
+roll-forwards, and full after-tax NOA/NFO/RNOA classification are not implemented.
+Their absence is not treated as zero. No assumed marginal tax rates or excess-cash
+adjustments are introduced. Historical common-size and return bridges are labelled
+product adaptations, not replications of the papers' empirical models.
 
 Only genuinely equivalent concepts align. Current/noncurrent and continuing/total
 operations stay separate. Missing values stay blank, not zero; even wholly empty
@@ -109,7 +156,7 @@ problems, not every defect. Review coverage and filings before preparing a model
 ## Automatic refresh, caches and contact privacy
 
 Company selection starts one workflow with independent Yahoo and SEC loading.
-Statements appear before Excel finishes; a ready workbook can download even while
+Progress reports statement retrieval and workbook preparation; a ready workbook can download even while
 market loading continues. Ordinary widget reruns/downloads do not regenerate the
 page. Browser refresh restores non-secret selected CIK/ticker URL parameters and
 checks providers again. Last-good fallback has its original timestamps and a
@@ -146,8 +193,8 @@ bash scripts/setup_cloud.sh
 The setup script installs development dependencies, checks them and runs the
 offline suite. On Windows, use `.venv\Scripts\python.exe -m pytest -q` after
 installing `requirements-dev.txt`; the launcher installs runtime packages only.
-See [the technical specification](docs/SPEC_v0.4.md) and
-[validation evidence](docs/VALIDATION.md) for tested versus blocked capabilities.
+See [the technical specification](docs/SPEC_v0.5.md) and
+[release validation evidence](docs/RELEASE_v0.5.md) for tested versus blocked capabilities.
 
 Network hosts include `www.sec.gov`, `data.sec.gov`, PyPI package hosts,
 `query1.finance.yahoo.com`, `query2.finance.yahoo.com`, `fc.yahoo.com`,
