@@ -1,6 +1,6 @@
 # Fishtorian
 
-A private, browser-based historical financial research workspace. Select a company
+A browser-based historical financial research workspace. Select a company
 to automatically load Yahoo market context, SEC annual statements, supporting
 schedules, historical calculations, explanations and a matching Excel workbook.
 Then choose **Download Excel workbook**.
